@@ -16,7 +16,7 @@ pinned: false
 MSI–HE 配准、深度学习超分辨、ROI 提取、差异代谢物筛选、随机森林分类器、
 空间热图与通路富集等模块。
 
-- 源码仓库：<https://github.com/kejiayihhhhhh0728-code/msi-tool>
+- 源码仓库：<https://github.com/kwin6661125/msi-tool>
 - 本地运行：`cd msi-tool && pip install -r requirements.txt && python app.py` → <http://localhost:5000>
 - 在线部署：本仓库根目录的 `Dockerfile` 用于 Hugging Face Spaces（Docker SDK，端口 7860）
 
