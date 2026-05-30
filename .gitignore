@@ -17,3 +17,8 @@ msi-tool/temp/
 # OS
 .DS_Store
 Thumbs.db
+
+# 论文插图与绘图脚本（不纳入仓库）
+*.pdf
+*.png
+画图.py
