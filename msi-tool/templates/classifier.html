@@ -1,0 +1,174 @@
+{% extends "base.html" %}
+{% block title %}分类器{% endblock %}
+
+{% block head %}
+<style>
+.plot-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:1rem; }
+.plot-card { background:var(--bg-card); border:1px solid var(--border); border-radius:8px; padding:0.8rem; }
+.plot-card img { width:100%; background:white; border-radius:6px; display:block; }
+.result-table { width:100%; border-collapse:collapse; font-size:0.8rem; }
+.result-table th { text-align:left; color:var(--text-muted); border-bottom:1px solid var(--border); padding:0.55rem; white-space:nowrap; }
+.result-table td { border-bottom:1px solid var(--border); padding:0.5rem 0.55rem; }
+.num { font-family:var(--mono); white-space:nowrap; }
+@media (max-width: 1100px) { .plot-grid { grid-template-columns:1fr; } }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h2>RF 组合分类器与 Biomarker 筛选</h2>
+  <p class="page-desc">基于模块8差异代谢物和模块7像素级 ROI 数据，执行 nested LOSO RF、样本级置换检验和 biomarker 决策表排序。</p>
+</div>
+
+<div class="card">
+  <div class="card-title">分类器参数</div>
+  <div class="param-grid">
+    <div class="param-item">
+      <label>组织 / tissue</label>
+      <select id="tissueSelect" class="input-select"><option value="">正在读取...</option></select>
+    </div>
+    <div class="param-item">
+      <label>Top-N 组合</label>
+      <input type="text" id="topNList" value="3,5,10,15" class="input-num">
+    </div>
+    <div class="param-item">
+      <label>置换次数</label>
+      <input type="number" id="nPerm" value="20" min="0" max="1000" step="10" class="input-num">
+    </div>
+    <div class="param-item">
+      <label>RF 决策树数</label>
+      <input type="number" id="nTrees" value="200" min="50" max="1000" step="50" class="input-num">
+    </div>
+    <div class="param-item">
+      <label>最多差异代谢物</label>
+      <input type="number" id="maxFeatures" value="30" min="2" max="200" step="1" class="input-num">
+    </div>
+    <div class="param-item">
+      <label>每类训练像素上限</label>
+      <input type="number" id="maxPixels" value="20000" min="100" max="100000" step="1000" class="input-num">
+    </div>
+  </div>
+  <div class="panel-actions">
+    <button class="btn btn-primary" id="btnClassify">运行分类器</button>
+    <button class="btn btn-secondary" id="btnExport" disabled>导出决策表</button>
+  </div>
+</div>
+
+<div id="metrics" class="metrics-row" style="display:none;">
+  <div class="metric-chip"><div class="val" id="mSamples">0</div><div class="lbl">样本</div></div>
+  <div class="metric-chip"><div class="val" id="mMets">0</div><div class="lbl">代谢物</div></div>
+  <div class="metric-chip"><div class="val" id="mCancer">0</div><div class="lbl">癌区像素</div></div>
+  <div class="metric-chip"><div class="val" id="mPara">0</div><div class="lbl">癌旁像素</div></div>
+</div>
+
+<div class="result-placeholder" id="classifierPlaceholder">
+  <div class="placeholder-icon">9</div>
+  <div>分类完成后，ROC 曲线与 Biomarker 决策表将显示在此</div>
+</div>
+
+<div id="classifierResult" style="display:none;">
+  <div class="plot-grid" id="plotGrid"></div>
+  <div class="card mt-2">
+    <div class="card-title">Biomarker 决策表 Top 50</div>
+    <div style="overflow:auto;">
+      <table class="result-table">
+        <thead><tr><th>Metabolite</th><th>Score</th><th>Single AUC</th><th>RF Importance</th><th>FDR</th><th>log2FC</th><th>VIP</th><th>Change</th></tr></thead>
+        <tbody id="resultRows"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let currentTissue = '';
+const $ = id => document.getElementById(id);
+const fmt = (v, d=3) => (v === null || v === undefined || Number.isNaN(Number(v))) ? '-' : Number(v).toPrecision(d);
+function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+
+async function loadStatus(){
+  const r = await fetch('/classifier/api/status');
+  const d = await r.json();
+  const tissues = d.tissues || [];
+  if (!tissues.length) {
+    $('tissueSelect').innerHTML = '<option value="">暂无可分析 tissue</option>';
+    $('btnClassify').disabled = true;
+    return;
+  }
+  $('tissueSelect').innerHTML = tissues.map(t =>
+    `<option value="${esc(t.name)}">${esc(t.name)} (${t.n_samples} 对${t.has_diff ? '' : '，未跑模块8'})</option>`
+  ).join('');
+  currentTissue = $('tissueSelect').value;
+}
+
+$('tissueSelect').addEventListener('change', () => { currentTissue = $('tissueSelect').value; $('btnExport').disabled = true; });
+
+$('btnClassify').addEventListener('click', async () => {
+  const tissue = $('tissueSelect').value;
+  if (!tissue) return showToast('请选择 tissue', 'error');
+  const btn = $('btnClassify');
+  btn.disabled = true;
+  $('btnExport').disabled = true;
+  $('classifierPlaceholder').style.display = 'flex';
+  $('classifierPlaceholder').innerHTML = '<div class="placeholder-icon">...</div><div>正在运行 RF LOSO 和置换检验，请稍候</div>';
+  $('classifierResult').style.display = 'none';
+  try {
+    const topList = $('topNList').value.split(',').map(x => Number(x.trim())).filter(x => x > 0);
+    const r = await fetch('/classifier/api/run', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({
+        tissue,
+        top_n_list: topList,
+        n_permutations: Number($('nPerm').value),
+        n_estimators: Number($('nTrees').value),
+        max_features: Number($('maxFeatures').value),
+        max_pixels_per_class: Number($('maxPixels').value),
+      })
+    });
+    const d = await r.json();
+    if (d.status !== 'ok') throw new Error(d.message || '分类器运行失败');
+    renderResult(d);
+    currentTissue = d.tissue;
+    showToast('分类器运行完成', 'success');
+  } catch(e) {
+    $('classifierPlaceholder').innerHTML = `<div class="placeholder-icon">!</div><div>${esc(e.message)}</div>`;
+    showToast(e.message, 'error', 7000);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+$('btnExport').addEventListener('click', async () => {
+  const r = await fetch('/classifier/api/export', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({tissue:currentTissue})});
+  if (!r.ok) return showToast('导出失败，请先运行分类器', 'error');
+  const blob = await r.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = `biomarker_${currentTissue}.xlsx`; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+});
+
+function renderResult(d){
+  $('classifierPlaceholder').style.display = 'none';
+  $('classifierResult').style.display = 'block';
+  $('metrics').style.display = 'flex';
+  $('mSamples').textContent = d.n_samples;
+  $('mMets').textContent = d.n_metabolites;
+  $('mCancer').textContent = d.n_cancer_px;
+  $('mPara').textContent = d.n_para_px;
+  const plots = [['ROC 曲线', d.roc_img], ['AUC 对比', d.auc_img]];
+  Object.entries(d.perm_imgs || {}).forEach(([n,img]) => plots.push([`置换检验 Top-${n}`, img]));
+  $('plotGrid').innerHTML = plots.filter(p=>p[1]).map(([title,img]) =>
+    `<div class="plot-card"><div class="card-title">${title}</div><img src="data:image/png;base64,${img}"></div>`
+  ).join('');
+  $('resultRows').innerHTML = (d.table || []).map(r => `
+    <tr><td>${esc(r.Metabolite_ID)}</td><td class="num">${fmt(r.Composite_Score,3)}</td>
+    <td class="num">${fmt(r.Pixel_AUC_single,4)}</td><td class="num">${fmt(r.RF_Importance_mean,3)}</td>
+    <td class="num">${fmt(r.FDR,3)}</td><td class="num">${fmt(r.log2FC,4)}</td>
+    <td class="num">${fmt(r.VIP,3)}</td><td>${esc(r.Change)}</td></tr>`).join('');
+  $('btnExport').disabled = false;
+}
+
+loadStatus();
+</script>
+{% endblock %}

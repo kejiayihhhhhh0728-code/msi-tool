@@ -1,0 +1,422 @@
+{% extends "base.html" %}
+{% block title %}空间 NMF{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h2>空间积累模式分析（NMF）</h2>
+  <p class="page-desc">
+    Moran's I 空间自相关筛选 → NMF 分解提取空间积累模式（Topics） → Spearman 相关识别代表代谢物
+  </p>
+</div>
+
+<!-- ─── 参数面板 ─── -->
+<div class="card">
+  <div class="card-title">NMF 参数</div>
+
+  <!-- 第一行：基础参数 -->
+  <div class="param-grid" style="grid-template-columns: repeat(4, 1fr);">
+    <div class="param-item">
+      <label>模式数（Topics）</label>
+      <input type="number" id="nComponents" value="5" min="2" max="20" class="input-num">
+      <span class="hint">提取的空间积累模式数，参考实验记录 12 默认 5</span>
+    </div>
+    <div class="param-item">
+      <label>Top 代谢物数</label>
+      <input type="number" id="topN" value="10" min="3" max="30" class="input-num">
+      <span class="hint">每个模式按 Spearman ρ 展示的代谢物数</span>
+    </div>
+    <div class="param-item">
+      <label>颜色分位数截断</label>
+      <input type="number" id="maxCutoff" value="0.9" min="0.5" max="1.0" step="0.05" class="input-num">
+      <span class="hint">空间图颜色上界分位数（0.9 = 第 90 百分位截断）</span>
+    </div>
+    <div class="param-item">
+      <label>Moran's I 筛选</label>
+      <select id="moranFilter" class="input-select" onchange="toggleMoranParams()">
+        <option value="1">开启（推荐，保留空间聚集代谢物）</option>
+        <option value="0">关闭（对全部代谢物 NMF）</option>
+      </select>
+      <span class="hint">筛去空间随机分布的代谢物，降低噪声干扰</span>
+    </div>
+  </div>
+
+  <!-- Moran's I 专属参数 -->
+  <div id="moranParams" style="margin-top:0.8rem;">
+    <div style="font-size:0.8rem; color:var(--text-muted); margin-bottom:0.5rem; font-weight:600;">
+      Moran's I 参数
+    </div>
+    <div class="param-grid" style="grid-template-columns: repeat(4, 1fr);">
+      <div class="param-item">
+        <label>FDR 截断阈值</label>
+        <input type="number" id="cutoff" value="0.5" min="0.01" max="1.0" step="0.05" class="input-num">
+        <span class="hint">保留 BH-FDR 校正后 p &lt; 此值的代谢物；探索阶段建议 0.5</span>
+      </div>
+      <div class="param-item">
+        <label>k-NN 邻居数</label>
+        <input type="number" id="nNeighbors" value="10" min="3" max="30" class="input-num">
+        <span class="hint">构建空间权重矩阵的 k 近邻数，默认 10</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel-actions" style="margin-top:1rem;">
+    <button class="btn btn-primary" id="btnNMF">▶ 执行 NMF 分析</button>
+    <span style="font-size:0.8rem; color:var(--text-muted); margin-left:1rem;">
+      Moran's I 筛选 + NMF + Spearman 相关，大数据集（~1 万像素）约需 1-3 分钟
+    </span>
+  </div>
+
+  <!-- 进度条 -->
+  <div id="nmfProgress" style="display:none; margin-top:0.8rem;">
+    <div class="progress-bar">
+      <div class="progress-fill" style="animation: nmfPulse 2.5s ease-in-out infinite;"></div>
+    </div>
+    <div style="font-size:0.78rem; color:var(--text-muted); margin-top:0.4rem;" id="nmfProgressMsg">
+      计算中，请稍候...
+    </div>
+  </div>
+</div>
+
+<!-- ─── 结果区（初始隐藏）─── -->
+<div id="nmfResult" style="display:none;">
+
+  <!-- 信息条 -->
+  <div class="card" style="margin-top:0.8rem;">
+    <div class="card-title">分析概览</div>
+    <div class="metrics-row" id="nmfInfoRow"></div>
+  </div>
+
+  <!-- 空间模式总图 -->
+  <div class="card" style="margin-top:0.8rem;">
+    <div class="card-title">空间积累模式总览</div>
+    <p style="color:var(--text-muted); font-size:0.82rem; margin-bottom:0.6rem;">
+      每格对应一个 Topic，颜色越深（深紫）表示该模式在对应像素的载荷越高；
+      浅灰→中紫→深紫渐变（仿实验记录 12 §4.2）
+    </p>
+    <div style="text-align:center;">
+      <img id="patternGridImg"
+           style="max-width:100%; border-radius:var(--radius);
+                  border:1px solid var(--border);">
+    </div>
+  </div>
+
+  <!-- 各模式详情（手风琴） -->
+  <div class="card" style="margin-top:0.8rem;">
+    <div class="card-title">各模式代表代谢物 &amp; 空间分布</div>
+    <p style="color:var(--text-muted); font-size:0.82rem; margin-bottom:0.6rem;">
+      代谢物按 Spearman ρ 降序排列（正相关越强 → 越代表该模式）；
+      空间分布图使用 inferno 色图（黑→橙→黄，亮度反映强度）
+    </p>
+    <div id="patternAccordion"></div>
+  </div>
+
+  <!-- 导出 -->
+  <div class="card" style="margin-top:0.8rem;">
+    <div class="card-title">导出结果</div>
+    <p style="color:var(--text-muted); font-size:0.82rem; margin-bottom:0.8rem;">
+      CSV 包含列：pattern（模式编号）、rank（排名）、mz（代谢物 m/z 或名称）、spearman_rho（Spearman 相关系数）
+    </p>
+    <div class="panel-actions">
+      <a class="btn btn-primary" href="/nmf/api/download_csv" download>
+        ↓ 下载 Spearman 相关表 CSV
+      </a>
+    </div>
+  </div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<style>
+.hint {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  display: block;
+  margin-top: 0.25rem;
+}
+
+/* 进度条动画 */
+@keyframes nmfPulse {
+  0%   { width: 3%; }
+  40%  { width: 70%; }
+  80%  { width: 92%; }
+  100% { width: 97%; }
+}
+.progress-bar {
+  height: 4px;
+  background: var(--border);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.progress-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 2px;
+  width: 3%;
+}
+
+/* ── 手风琴 ── */
+.accordion-item {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-bottom: 0.5rem;
+  overflow: hidden;
+}
+.accordion-header {
+  padding: 0.7rem 1rem;
+  background: var(--card-bg);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-weight: 500;
+  user-select: none;
+  transition: background 0.15s;
+}
+.accordion-header:hover {
+  background: color-mix(in srgb, var(--accent) 8%, var(--card-bg));
+}
+.accordion-header.active {
+  background: color-mix(in srgb, var(--accent) 12%, var(--card-bg));
+}
+.accordion-arrow {
+  transition: transform 0.2s;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+.accordion-header.active .accordion-arrow { transform: rotate(180deg); }
+.accordion-body {
+  display: none;
+  padding: 0.8rem 1rem 1rem;
+  border-top: 1px solid var(--border);
+}
+.accordion-body.open { display: block; }
+
+/* ── 代谢物表格 ── */
+.met-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+  margin-bottom: 0.8rem;
+}
+.met-table th {
+  text-align: left;
+  padding: 0.4rem 0.7rem;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  font-weight: 500;
+}
+.met-table td {
+  padding: 0.38rem 0.7rem;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 50%, transparent);
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  vertical-align: middle;
+}
+.met-table tr:last-child td { border-bottom: none; }
+.rho-bar {
+  display: inline-block;
+  height: 7px;
+  border-radius: 3px;
+  background: var(--accent);
+  opacity: 0.65;
+  vertical-align: middle;
+  margin-left: 6px;
+  transition: width 0.3s;
+}
+.rho-neg { background: #e07b54; }
+
+/* 空间分布图标题 */
+.met-img-title {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  margin-bottom: 0.4rem;
+  margin-top: 0.2rem;
+}
+</style>
+
+<script>
+/* ── HTML 转义（防止 m/z 名称中的特殊字符破坏 DOM）── */
+function esc(str) {
+  return String(str).replace(/[&<>"']/g, m => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;',
+    '"': '&quot;', "'": '&#39;'
+  })[m]);
+}
+
+/* ── Moran's I 参数区显隐 ── */
+function toggleMoranParams() {
+  const on = document.getElementById('moranFilter').value === '1';
+  document.getElementById('moranParams').style.display = on ? 'block' : 'none';
+}
+
+/* ── 手风琴构建 ── */
+function buildAccordion(topMetabolites, topMetImgs, nComponents) {
+  const container = document.getElementById('patternAccordion');
+  container.innerHTML = '';
+
+  for (let i = 0; i < nComponents; i++) {
+    const mets = topMetabolites[i] || [];
+    const img  = topMetImgs[i]     || '';
+
+    /* 头部 */
+    const topRho = mets.length > 0 ? mets[0].spearman_rho : 0;
+    const item   = document.createElement('div');
+    item.className = 'accordion-item';
+
+    const header = document.createElement('div');
+    header.className = 'accordion-header' + (i === 0 ? ' active' : '');
+    header.innerHTML = `
+      <span>
+        Topic ${i + 1}
+        <span style="font-weight:400;color:var(--text-muted);font-size:0.8rem;margin-left:0.5rem;">
+          top ρ = ${topRho.toFixed(4)}
+        </span>
+      </span>
+      <span class="accordion-arrow">▼</span>`;
+
+    const body = document.createElement('div');
+    body.className = 'accordion-body' + (i === 0 ? ' open' : '');
+
+    header.addEventListener('click', () => {
+      header.classList.toggle('active');
+      body.classList.toggle('open');
+    });
+
+    /* 代谢物表格 */
+    let rows = '';
+    mets.forEach((m, k) => {
+      const rho    = m.spearman_rho;
+      const barW   = Math.round(Math.abs(rho) * 100);
+      const barCls = rho < 0 ? 'rho-bar rho-neg' : 'rho-bar';
+      rows += `<tr>
+        <td>${k + 1}</td>
+        <td>${esc(m.mz)}</td>
+        <td>${rho.toFixed(4)}</td>
+        <td><span class="${barCls}" style="width:${barW}px;"></span></td>
+      </tr>`;
+    });
+
+    const tableHTML = `
+      <table class="met-table">
+        <thead>
+          <tr>
+            <th>排名</th>
+            <th>代谢物（m/z 或名称）</th>
+            <th>Spearman ρ</th>
+            <th>相关强度</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+
+    /* top 代谢物空间分布图 */
+    const imgHTML = img
+      ? `<div class="met-img-title">
+           Top 代谢物空间分布（inferno 色图，亮度反映强度）
+         </div>
+         <img src="data:image/png;base64,${img}"
+              style="max-width:100%;border-radius:var(--radius);
+                     border:1px solid var(--border);">`
+      : `<div style="color:var(--text-muted);font-size:0.8rem;margin-top:0.5rem;">
+           （暂无空间分布图）
+         </div>`;
+
+    body.innerHTML = tableHTML + imgHTML;
+    item.appendChild(header);
+    item.appendChild(body);
+    container.appendChild(item);
+  }
+}
+
+/* ── 主按钮事件 ── */
+document.getElementById('btnNMF').addEventListener('click', async () => {
+  const nComponents = parseInt(document.getElementById('nComponents').value);
+  const topN        = parseInt(document.getElementById('topN').value);
+  const maxCutoff   = parseFloat(document.getElementById('maxCutoff').value);
+  const moranFilter = document.getElementById('moranFilter').value === '1';
+  const cutoff      = parseFloat(document.getElementById('cutoff').value);
+  const nNeighbors  = parseInt(document.getElementById('nNeighbors').value);
+
+  /* 参数校验 */
+  if (nComponents < 2 || nComponents > 20) {
+    showToast('模式数范围：2 ~ 20', 'error'); return;
+  }
+  if (topN < 3 || topN > 30) {
+    showToast('Top 代谢物数范围：3 ~ 30', 'error'); return;
+  }
+
+  const btn = document.getElementById('btnNMF');
+  btn.disabled = true;
+  document.getElementById('nmfProgress').style.display = 'block';
+  document.getElementById('nmfProgressMsg').textContent = moranFilter
+    ? `Moran's I 筛选（k=${nNeighbors}，FDR<${cutoff}）→ NMF（${nComponents} 模式）→ Spearman 相关，请稍候...`
+    : `NMF 分解（${nComponents} 模式）→ Spearman 相关，请稍候...`;
+  document.getElementById('nmfResult').style.display = 'none';
+
+  try {
+    const resp = await fetch('/nmf/api/run', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({
+        n_components:  nComponents,
+        top_n:         topN,
+        max_cutoff:    maxCutoff,
+        moran_filter:  moranFilter,
+        cutoff:        cutoff,
+        n_neighbors:   nNeighbors,
+      }),
+    });
+    const data = await resp.json();
+
+    document.getElementById('nmfProgress').style.display = 'none';
+    btn.disabled = false;
+
+    if (data.status !== 'success') {
+      showToast('NMF 失败：' + data.message, 'error', 8000);
+      console.error(data.traceback);
+      return;
+    }
+
+    /* ── 信息条 ── */
+    const info = data.info;
+    const moranLabel = info.moran_filter
+      ? `${info.n_features_after_moran.toLocaleString()} (FDR<${info.cutoff})`
+      : `${info.n_features_after_moran.toLocaleString()} (未筛选)`;
+    const chips = [
+      { val: info.n_pixels.toLocaleString(),         lbl: '像素数' },
+      { val: info.n_features_input.toLocaleString(), lbl: '输入特征数' },
+      { val: moranLabel,                             lbl: "Moran's I 后" },
+      { val: info.n_components,                      lbl: '模式数（Topics）' },
+      { val: info.reconstruction_err.toFixed(3),     lbl: 'NMF 重构误差' },
+    ];
+    document.getElementById('nmfInfoRow').innerHTML = chips.map(c =>
+      `<div class="metric-chip">
+         <div class="val">${c.val}</div>
+         <div class="lbl">${c.lbl}</div>
+       </div>`
+    ).join('');
+
+    /* ── 模式总图 ── */
+    document.getElementById('patternGridImg').src =
+      'data:image/png;base64,' + data.pattern_grid_img;
+
+    /* ── 手风琴 ── */
+    buildAccordion(data.top_metabolites, data.top_met_imgs, info.n_components);
+
+    /* ── 展示结果 ── */
+    document.getElementById('nmfResult').style.display = 'block';
+    document.getElementById('nmfResult').scrollIntoView({
+      behavior: 'smooth', block: 'start'
+    });
+    showToast('NMF 分析完成', 'success');
+
+  } catch (e) {
+    document.getElementById('nmfProgress').style.display = 'none';
+    btn.disabled = false;
+    showToast('请求失败：' + e.message, 'error');
+  }
+});
+</script>
+{% endblock %}

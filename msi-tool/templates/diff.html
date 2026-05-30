@@ -1,0 +1,303 @@
+{% extends "base.html" %}
+{% block title %}差异代谢物{% endblock %}
+
+{% block head %}
+<style>
+.diff-grid { display:grid; grid-template-columns: 360px 1fr; gap:1rem; align-items:start; }
+.status-list { display:flex; flex-direction:column; gap:0.45rem; max-height:260px; overflow:auto; }
+.status-row { display:flex; justify-content:space-between; gap:0.7rem; padding:0.45rem 0.55rem; border:1px solid var(--border); border-radius:6px; background:var(--bg-input); font-size:0.8rem; }
+.status-row .muted { color:var(--text-muted); font-size:0.75rem; }
+.hint-box { border:1px solid rgba(245,158,11,0.35); background:rgba(245,158,11,0.08); color:#fbbf24; border-radius:6px; padding:0.65rem 0.8rem; font-size:0.82rem; margin-bottom:1rem; display:none; }
+.plot-grid { display:grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap:1rem; }
+.plot-card { background:var(--bg-card); border:1px solid var(--border); border-radius:8px; padding:0.8rem; }
+.plot-card h3 { font-size:0.86rem; color:var(--text-dim); font-weight:600; margin-bottom:0.6rem; }
+.plot-card img { width:100%; display:block; border-radius:6px; background:white; }
+.result-table { width:100%; border-collapse:collapse; font-size:0.8rem; }
+.result-table th { text-align:left; padding:0.55rem; color:var(--text-muted); border-bottom:1px solid var(--border); font-weight:500; white-space:nowrap; }
+.result-table td { padding:0.5rem 0.55rem; border-bottom:1px solid var(--border); vertical-align:top; }
+.pill { display:inline-flex; align-items:center; justify-content:center; min-width:46px; padding:0.12rem 0.45rem; border-radius:999px; font-size:0.72rem; font-family:var(--mono); }
+.pill.Up { color:#fecaca; background:rgba(248,113,113,0.18); }
+.pill.Down { color:#bfdbfe; background:rgba(59,130,246,0.18); }
+.pill.Non { color:var(--text-muted); background:var(--bg-hover); }
+.num { font-family:var(--mono); white-space:nowrap; }
+.wide, .plsda { grid-column: 1 / -1; }
+.checkbox-row { display:flex; align-items:center; gap:0.45rem; color:var(--text-dim); font-size:0.82rem; }
+.checkbox-row input { accent-color:var(--accent); }
+@media (max-width: 1100px) { .diff-grid, .plot-grid { grid-template-columns:1fr; } }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h2>差异代谢物筛选</h2>
+  <p class="page-desc">汇总当前批次中模块7输出的 ROI pseudo-bulk，执行配对检验、FDR 校正、log2FC 与 PLS-DA VIP 筛选。</p>
+</div>
+
+<div class="diff-grid">
+  <div>
+    <div class="card">
+      <div class="card-title">分析对象</div>
+      <div class="param-item">
+        <label>组织 / tissue</label>
+        <select id="tissueSelect" class="input-select">
+          <option value="">正在读取当前批次...</option>
+        </select>
+      </div>
+      <div class="status-list mt-2" id="cohortStatus"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">筛选阈值</div>
+      <div class="param-grid" style="grid-template-columns:1fr 1fr;">
+        <div class="param-item">
+          <label>FDR 阈值</label>
+          <input type="number" id="fdrThresh" value="0.05" min="0.001" max="0.2" step="0.005" class="input-num">
+        </div>
+        <div class="param-item">
+          <label>|log2FC| 阈值</label>
+          <input type="number" id="fcThresh" value="0.585" min="0.1" max="5" step="0.05" class="input-num">
+        </div>
+        <div class="param-item">
+          <label>VIP 阈值</label>
+          <input type="number" id="vipThresh" value="1.0" min="0.5" max="3" step="0.1" class="input-num">
+        </div>
+        <div class="param-item">
+          <label>PLS-DA 置换次数</label>
+          <input type="number" id="plsPerm" value="200" min="0" max="1000" step="50" class="input-num">
+        </div>
+      </div>
+      <div style="display:flex; flex-direction:column; gap:0.5rem; margin-top:0.6rem;">
+        <label class="checkbox-row"><input type="checkbox" id="doMedian" checked> 中位数中心化校正</label>
+        <label class="checkbox-row"><input type="checkbox" id="doPca" checked> 输出 PCA 图</label>
+        <label class="checkbox-row"><input type="checkbox" id="doPlsda" checked> 输出 PLS-DA / VIP 图</label>
+      </div>
+      <div class="panel-actions">
+        <button class="btn btn-primary" id="btnDiff">执行差异分析</button>
+        <button class="btn btn-secondary" id="btnExport" disabled>导出 Excel</button>
+      </div>
+    </div>
+  </div>
+
+  <div>
+    <div class="hint-box" id="warnBox"></div>
+
+    <div id="summaryMetrics" class="metrics-row" style="display:none;">
+      <div class="metric-chip"><div class="val" id="mSamples">0</div><div class="lbl">配对样本</div></div>
+      <div class="metric-chip"><div class="val" id="mMets">0</div><div class="lbl">共同 m/z</div></div>
+      <div class="metric-chip"><div class="val red" id="mUp">0</div><div class="lbl">上调</div></div>
+      <div class="metric-chip"><div class="val green" id="mDown">0</div><div class="lbl">下调</div></div>
+      <div class="metric-chip"><div class="val" id="mTest" style="font-size:0.86rem;">-</div><div class="lbl">检验方法</div></div>
+      <div class="metric-chip"><div class="val" id="mPlsAuc">-</div><div class="lbl">PLS CV-AUC</div></div>
+      <div class="metric-chip"><div class="val" id="mPlsQ2">-</div><div class="lbl">PLS Q2</div></div>
+      <div class="metric-chip"><div class="val" id="mPlsP">-</div><div class="lbl">PLS perm p</div></div>
+    </div>
+
+    <div class="result-placeholder" id="diffPlaceholder">
+      <div class="placeholder-icon">8</div>
+      <div>选择 tissue 后运行分析，结果图和差异代谢物表会显示在这里</div>
+    </div>
+
+    <div id="diffResult" style="display:none;">
+      <div class="plot-grid" id="plotGrid"></div>
+      <div class="card mt-2">
+        <div class="card-title">Top 差异代谢物</div>
+        <div style="overflow:auto;">
+          <table class="result-table">
+            <thead>
+              <tr>
+                <th>Metabolite / m/z</th>
+                <th>Change</th>
+                <th>log2FC</th>
+                <th>FDR</th>
+                <th>P value</th>
+                <th>VIP</th>
+                <th>Pixel AUC</th>
+                <th>Effect</th>
+                <th>Consistency</th>
+              </tr>
+            </thead>
+            <tbody id="resultRows"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let currentTissue = '';
+
+const $ = (id) => document.getElementById(id);
+const fmt = (v, digits=3) => (v === null || v === undefined || Number.isNaN(Number(v))) ? '-' : Number(v).toExponential ? Number(v).toPrecision(digits) : String(v);
+
+async function loadStatus() {
+  try {
+    const r = await fetch('/diff/api/status');
+    const d = await r.json();
+    if (d.status !== 'ok') throw new Error(d.message || '读取失败');
+    renderTissues(d.tissues || []);
+    renderCohortStatus(d);
+  } catch (e) {
+    $('tissueSelect').innerHTML = '<option value="">读取失败</option>';
+    showToast(e.message, 'error');
+  }
+}
+
+function renderTissues(tissues) {
+  if (!tissues.length) {
+    $('tissueSelect').innerHTML = '<option value="">暂无可配对 tissue</option>';
+    $('btnDiff').disabled = true;
+    return;
+  }
+  $('btnDiff').disabled = false;
+  $('tissueSelect').innerHTML = tissues.map(t =>
+    `<option value="${escapeHtml(t.name)}">${escapeHtml(t.name)} (${t.n_samples} 对, ${t.n_metabolites} m/z)</option>`
+  ).join('');
+  currentTissue = $('tissueSelect').value;
+}
+
+function renderCohortStatus(d) {
+  const box = $('cohortStatus');
+  const tissues = d.tissues || [];
+  if (!tissues.length) {
+    box.innerHTML = '<div class="status-row"><span>未检测到配对 ROI</span><span class="muted">需 cancer + paracancer</span></div>';
+    return;
+  }
+  box.innerHTML = tissues.map(t => `
+    <div class="status-row">
+      <div>
+        <div>${escapeHtml(t.name)}</div>
+        <div class="muted">${(t.sample_names || []).map(escapeHtml).join(', ')}</div>
+      </div>
+      <div class="num">${t.n_samples} 对</div>
+    </div>
+  `).join('');
+}
+
+$('tissueSelect').addEventListener('change', () => {
+  currentTissue = $('tissueSelect').value;
+  $('btnExport').disabled = true;
+});
+
+$('btnDiff').addEventListener('click', async () => {
+  const tissue = $('tissueSelect').value;
+  if (!tissue) {
+    showToast('当前批次没有可分析的 tissue', 'error');
+    return;
+  }
+  const btn = $('btnDiff');
+  btn.disabled = true;
+  $('btnExport').disabled = true;
+  $('diffPlaceholder').style.display = 'flex';
+  $('diffPlaceholder').innerHTML = '<div class="placeholder-icon">...</div><div>正在运行差异分析，PLS-DA 置换检验可能需要一点时间</div>';
+  $('diffResult').style.display = 'none';
+  $('warnBox').style.display = 'none';
+
+  try {
+    const r = await fetch('/diff/api/run', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        tissue,
+        p_cutoff: Number($('fdrThresh').value),
+        fc_cutoff: Number($('fcThresh').value),
+        vip_cutoff: Number($('vipThresh').value),
+        plsda_n_perm: Number($('plsPerm').value),
+        do_median_correction: $('doMedian').checked,
+        do_pca: $('doPca').checked,
+        do_plsda: $('doPlsda').checked,
+      })
+    });
+    const d = await r.json();
+    if (d.status !== 'ok') throw new Error(d.message || '分析失败');
+    currentTissue = d.export_tissue || tissue;
+    renderResult(d);
+    showToast('差异分析完成', 'success');
+  } catch (e) {
+    $('diffPlaceholder').innerHTML = `<div class="placeholder-icon">!</div><div>${escapeHtml(e.message)}</div>`;
+    showToast(e.message, 'error');
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+$('btnExport').addEventListener('click', async () => {
+  if (!currentTissue) return;
+  const r = await fetch('/diff/api/export', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({tissue: currentTissue})
+  });
+  if (!r.ok) {
+    const d = await r.json().catch(() => ({}));
+    showToast(d.message || '导出失败', 'error');
+    return;
+  }
+  const blob = await r.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `differential_${currentTissue}.xlsx`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+});
+
+function renderResult(d) {
+  $('diffPlaceholder').style.display = 'none';
+  $('diffResult').style.display = 'block';
+  $('summaryMetrics').style.display = 'flex';
+  $('mSamples').textContent = d.n_samples;
+  $('mMets').textContent = d.n_metabolites;
+  $('mUp').textContent = d.n_up;
+  $('mDown').textContent = d.n_down;
+  $('mTest').textContent = d.test_used || '-';
+  $('mPlsAuc').textContent = fmt(d.plsda_cv_auc, 3);
+  $('mPlsQ2').textContent = fmt(d.plsda_q2, 3);
+  $('mPlsP').textContent = fmt(d.plsda_perm_pval, 3);
+  if (d.warning) {
+    $('warnBox').textContent = d.warning;
+    $('warnBox').style.display = 'block';
+  }
+
+  const plots = [
+    ['火山图', d.volcano_img],
+    ['PCA', d.pca_img],
+    ['PLS-DA / VIP', d.plsda_img],
+    ['PLS-DA 置换检验', d.plsda_perm_img],
+    ['log2FC 热图', d.fc_heatmap_img],
+  ].filter(p => p[1]);
+  $('plotGrid').innerHTML = plots.map(([title, img]) => `
+    <div class="plot-card ${title.includes('热图') ? 'wide' : ''} ${title.includes('PLS-DA / VIP') ? 'plsda' : ''}">
+      <h3>${title}</h3>
+      <img src="data:image/png;base64,${img}" alt="${title}">
+    </div>
+  `).join('');
+
+  $('resultRows').innerHTML = (d.table || []).map(row => `
+    <tr>
+      <td>${escapeHtml(row.Metabolite)}</td>
+      <td><span class="pill ${escapeHtml(row.final_change || 'Non')}">${escapeHtml(row.final_change || 'Non')}</span></td>
+      <td class="num">${fmt(row.mean_log2FC, 4)}</td>
+      <td class="num">${fmt(row.FDR, 3)}</td>
+      <td class="num">${fmt(row.PValue, 3)}</td>
+      <td class="num">${fmt(row.VIP, 3)}</td>
+      <td class="num">${fmt(row.Pixel_AUC_abs ?? row.Pixel_AUC, 3)}</td>
+      <td class="num">${fmt(row.Effect_rank_biserial, 3)}</td>
+      <td class="num">${fmt(row.direction_consistency, 3)}</td>
+    </tr>
+  `).join('') || '<tr><td colspan="9" style="color:var(--text-muted);">没有可显示的结果</td></tr>';
+
+  $('btnExport').disabled = !d.export_ready;
+}
+
+function escapeHtml(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+loadStatus();
+</script>
+{% endblock %}

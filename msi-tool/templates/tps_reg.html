@@ -1,0 +1,458 @@
+{% extends "base.html" %}
+{% block title %}TPS 精配准{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h2>TPS 精细配准</h2>
+  <p class="page-desc">在 MSI TIC（仿射后）与 HE 图像上交替点击，建立控制点对，执行薄板样条非刚性配准</p>
+</div>
+
+<!-- ── 工具栏 ── -->
+<div class="landmark-toolbar">
+  <div class="toolbar-left">
+    <span class="toolbar-status" id="landmarkStatus">加载中...</span>
+  </div>
+  <div class="toolbar-right">
+    <span class="pair-count" id="pairCount">0 对</span>
+    <button class="btn btn-small btn-ghost" id="btnUndo"   disabled>↩ 撤销</button>
+    <button class="btn btn-small btn-ghost" id="btnClear"           >✕ 清空</button>
+    <button class="btn btn-small btn-ghost" id="btnExport" disabled >↓ 导出 JSON</button>
+    <button class="btn btn-small btn-ghost" id="btnImport"          >↑ 导入 JSON</button>
+    <input type="file" id="importInput" accept=".json" hidden>
+  </div>
+</div>
+
+<!-- ── 双面板 canvas ── -->
+<div class="landmark-panels">
+  <div class="landmark-panel" id="panelTIC">
+    <div class="panel-label">MSI TIC（仿射后）</div>
+    <div class="canvas-wrapper">
+      <canvas id="canvasTIC"></canvas>
+    </div>
+  </div>
+  <div class="landmark-divider"></div>
+  <div class="landmark-panel" id="panelHE">
+    <div class="panel-label">HE 染色图像</div>
+    <div class="canvas-wrapper">
+      <canvas id="canvasHE"></canvas>
+    </div>
+  </div>
+</div>
+
+<!-- ── 控制点列表 ── -->
+<div class="landmark-list-container">
+  <h4>控制点列表</h4>
+  <div class="landmark-list" id="landmarkList">
+    <div class="landmark-empty">尚未标注控制点</div>
+  </div>
+</div>
+
+<!-- ── 操作按钮 ── -->
+<div class="panel-actions mt-2">
+  <a href="{{ url_for('rigid_reg.index') }}" class="btn btn-secondary">← 返回刚性配准</a>
+  <button class="btn btn-primary" id="btnRunTPS" disabled>▶ 执行 TPS 配准</button>
+</div>
+
+<!-- ── TPS 结果区 ── -->
+<div id="tpsResultArea" style="display:none;">
+  <h3 class="section-title">TPS 配准结果</h3>
+  <div class="metrics-row" id="tpsMetrics"></div>
+  <div class="overlay-viewer" id="tpsOverlay"></div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// ════════════════════════════════════════════════════════════
+// 状态
+// ════════════════════════════════════════════════════════════
+const lm = {
+  pairs:      [],         // [{src:{x,y}, dst:{x,y}}, ...]
+  pendingSrc: null,
+  activeSide: 'tic',      // 'tic' | 'he'
+};
+const ticView = { img: null, scale: 1, offsetX: 0, offsetY: 0, dragging: false, lastMouse: null };
+const heView  = { img: null, scale: 1, offsetX: 0, offsetY: 0, dragging: false, lastMouse: null };
+
+const COLORS = [
+  '#e41a1c','#377eb8','#4daf4a','#984ea3',
+  '#ff7f00','#a65628','#f781bf','#66c2a5',
+  '#e6ab02','#66a61e','#e7298a','#7570b3',
+];
+
+// ════════════════════════════════════════════════════════════
+// 初始化：从 session 加载图像
+// ════════════════════════════════════════════════════════════
+async function loadSessionImages() {
+  try {
+    const resp = await fetch('/tps-reg/api/session_info');
+    const data = await resp.json();
+
+    if (data.status !== 'ok') {
+      document.getElementById('landmarkStatus').innerHTML =
+        `<span style="color:#ef4444;">⚠ ${data.message || '请先完成刚性配准'}</span>`;
+      return;
+    }
+
+    if (data.tic_img) loadImgFromB64(data.tic_img, ticView, 'tic');
+    if (data.he_img)  loadImgFromB64(data.he_img,  heView,  'he');
+
+    setTimeout(() => {
+      initCanvases();
+      updateStatus();
+    }, 200);
+  } catch (err) {
+    document.getElementById('landmarkStatus').textContent = '加载失败: ' + err.message;
+  }
+}
+
+function loadImgFromB64(b64, view, side) {
+  const img = new Image();
+  img.onload = () => {
+    view.img = img;
+    fitView(view, document.getElementById(side === 'tic' ? 'canvasTIC' : 'canvasHE'));
+    renderAll();
+  };
+  img.src = b64;
+}
+
+// ════════════════════════════════════════════════════════════
+// Canvas 初始化
+// ════════════════════════════════════════════════════════════
+function initCanvases() {
+  const canvasTIC = document.getElementById('canvasTIC');
+  const canvasHE  = document.getElementById('canvasHE');
+  resizeCanvas(canvasTIC, canvasTIC.parentElement);
+  resizeCanvas(canvasHE,  canvasHE.parentElement);
+  fitView(ticView, canvasTIC);
+  fitView(heView,  canvasHE);
+  setupEvents(canvasTIC, ticView, 'tic');
+  setupEvents(canvasHE,  heView,  'he');
+  window.addEventListener('resize', () => {
+    resizeCanvas(canvasTIC, canvasTIC.parentElement);
+    resizeCanvas(canvasHE,  canvasHE.parentElement);
+    renderAll();
+  });
+  renderAll();
+}
+
+function resizeCanvas(canvas, wrapper) {
+  const r = wrapper.getBoundingClientRect();
+  canvas.width  = r.width;
+  canvas.height = r.height;
+}
+
+function fitView(view, canvas) {
+  if (!view.img || !canvas.width) return;
+  const s = Math.min(canvas.width / view.img.width, canvas.height / view.img.height) * 0.92;
+  view.scale   = s;
+  view.offsetX = (canvas.width  - view.img.width  * s) / 2;
+  view.offsetY = (canvas.height - view.img.height * s) / 2;
+}
+
+// ════════════════════════════════════════════════════════════
+// Canvas 事件
+// ════════════════════════════════════════════════════════════
+function setupEvents(canvas, view, side) {
+  canvas.addEventListener('click', e => {
+    if (e.button !== 0) return;
+    if (view._wasDragging) { view._wasDragging = false; return; }
+    const r = canvas.getBoundingClientRect();
+    const imgX = (e.clientX - r.left  - view.offsetX) / view.scale;
+    const imgY = (e.clientY - r.top   - view.offsetY) / view.scale;
+    if (view.img && (imgX < 0 || imgY < 0 || imgX > view.img.width || imgY > view.img.height)) return;
+    handleClick(side, imgX, imgY);
+  });
+
+  canvas.addEventListener('contextmenu', e => { e.preventDefault(); undoLast(); });
+
+  canvas.addEventListener('wheel', e => {
+    e.preventDefault();
+    const r = canvas.getBoundingClientRect();
+    const mx = e.clientX - r.left;
+    const my = e.clientY - r.top;
+    const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
+    const ns = Math.max(0.1, Math.min(20, view.scale * factor));
+    view.offsetX = mx - (mx - view.offsetX) * (ns / view.scale);
+    view.offsetY = my - (my - view.offsetY) * (ns / view.scale);
+    view.scale = ns;
+    renderAll();
+  }, { passive: false });
+
+  canvas.addEventListener('mousedown', e => {
+    if (e.button === 1 || (e.button === 0 && e.altKey)) {
+      e.preventDefault();
+      view.dragging = true; view._dragMoved = false;
+      view.lastMouse = { x: e.clientX, y: e.clientY };
+      canvas.style.cursor = 'grabbing';
+    }
+  });
+  canvas.addEventListener('mousemove', e => {
+    if (!view.dragging) return;
+    const dx = e.clientX - view.lastMouse.x;
+    const dy = e.clientY - view.lastMouse.y;
+    view.offsetX += dx; view.offsetY += dy;
+    view.lastMouse = { x: e.clientX, y: e.clientY };
+    if (Math.abs(dx) > 2 || Math.abs(dy) > 2) view._dragMoved = true;
+    renderAll();
+  });
+  canvas.addEventListener('mouseup', e => {
+    if (view.dragging) {
+      view.dragging = false; view.lastMouse = null;
+      canvas.style.cursor = 'crosshair';
+      if (view._dragMoved) view._wasDragging = true;
+    }
+  });
+  canvas.addEventListener('mouseleave', () => {
+    if (view.dragging) { view.dragging = false; view.lastMouse = null; canvas.style.cursor = 'crosshair'; }
+  });
+}
+
+// ════════════════════════════════════════════════════════════
+// Landmark 逻辑
+// ════════════════════════════════════════════════════════════
+function handleClick(side, x, y) {
+  if (lm.activeSide === 'tic' && side === 'tic') {
+    lm.pendingSrc = { x, y };
+    lm.activeSide = 'he';
+    updateStatus(); renderAll();
+  } else if (lm.activeSide === 'he' && side === 'he' && lm.pendingSrc) {
+    lm.pairs.push({ src: lm.pendingSrc, dst: { x, y } });
+    lm.pendingSrc = null;
+    lm.activeSide = 'tic';
+    updateStatus(); updateList(); updateButtons(); renderAll();
+    showToast(`第 ${lm.pairs.length} 对控制点已标注`, 'success');
+  }
+}
+
+function undoLast() {
+  if (lm.activeSide === 'he' && lm.pendingSrc) {
+    lm.pendingSrc = null; lm.activeSide = 'tic';
+  } else if (lm.pairs.length > 0) {
+    lm.pairs.pop();
+  }
+  updateStatus(); updateList(); updateButtons(); renderAll();
+}
+
+function deletePair(i) {
+  lm.pairs.splice(i, 1);
+  updateStatus(); updateList(); updateButtons(); renderAll();
+}
+
+function updateStatus() {
+  const el = document.getElementById('landmarkStatus');
+  const n  = lm.pairs.length;
+  if (lm.activeSide === 'tic') {
+    el.innerHTML = `请在<strong>左图 (TIC)</strong> 上点击第 ${n + 1} 个点`;
+  } else {
+    el.innerHTML = `请在<strong>右图 (HE)</strong> 上点击对应位置`;
+  }
+  document.getElementById('pairCount').textContent = `${n} 对`;
+}
+
+function updateList() {
+  const list = document.getElementById('landmarkList');
+  if (lm.pairs.length === 0) {
+    list.innerHTML = '<div class="landmark-empty">尚未标注控制点</div>';
+    return;
+  }
+  list.innerHTML = lm.pairs.map((p, i) => {
+    const c = COLORS[i % COLORS.length];
+    return `<div class="landmark-row">
+      <div class="dot" style="background:${c}"></div>
+      <span style="color:${c};font-weight:500;">#${i + 1}</span>
+      <span class="coords">
+        TIC (${p.src.x.toFixed(1)}, ${p.src.y.toFixed(1)})
+        → HE (${p.dst.x.toFixed(1)}, ${p.dst.y.toFixed(1)})
+      </span>
+      <button class="del-btn" onclick="deletePair(${i})" title="删除">×</button>
+    </div>`;
+  }).join('');
+}
+
+function updateButtons() {
+  const n = lm.pairs.length;
+  document.getElementById('btnUndo').disabled   = (n === 0 && !lm.pendingSrc);
+  document.getElementById('btnExport').disabled = (n === 0);
+  document.getElementById('btnRunTPS').disabled = (n < 3);
+}
+
+// ════════════════════════════════════════════════════════════
+// 渲染
+// ════════════════════════════════════════════════════════════
+function renderAll() {
+  renderCanvas(document.getElementById('canvasTIC'), ticView, 'tic');
+  renderCanvas(document.getElementById('canvasHE'),  heView,  'he');
+}
+
+function renderCanvas(canvas, view, side) {
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  if (view.img) {
+    ctx.save();
+    ctx.translate(view.offsetX, view.offsetY);
+    ctx.scale(view.scale, view.scale);
+    ctx.drawImage(view.img, 0, 0);
+    ctx.restore();
+  } else {
+    ctx.fillStyle = '#1a1d27';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#64748b';
+    ctx.font = '14px "Noto Sans SC"';
+    ctx.textAlign = 'center';
+    ctx.fillText(
+      side === 'tic' ? '等待 TIC 图像（刚性配准后生成）' : '等待 HE 图像',
+      canvas.width / 2, canvas.height / 2
+    );
+    ctx.textAlign = 'start';
+  }
+
+  // 已完成的控制点对
+  lm.pairs.forEach((pair, i) => {
+    const color = COLORS[i % COLORS.length];
+    const pt    = side === 'tic' ? pair.src : pair.dst;
+    const sx    = pt.x * view.scale + view.offsetX;
+    const sy    = pt.y * view.scale + view.offsetY;
+    ctx.beginPath(); ctx.arc(sx, sy, 8, 0, Math.PI * 2);
+    ctx.strokeStyle = color; ctx.lineWidth = 2.5; ctx.stroke();
+    ctx.fillStyle = color + '40'; ctx.fill();
+    ctx.fillStyle = color;
+    ctx.font = 'bold 11px "JetBrains Mono"'; ctx.textAlign = 'left';
+    ctx.fillText(`${i + 1}`, sx + 12, sy - 4);
+  });
+
+  // Pending 点（仅 TIC 侧）
+  if (side === 'tic' && lm.pendingSrc) {
+    const pt    = lm.pendingSrc;
+    const sx    = pt.x * view.scale + view.offsetX;
+    const sy    = pt.y * view.scale + view.offsetY;
+    const color = COLORS[lm.pairs.length % COLORS.length];
+    ctx.beginPath(); ctx.arc(sx, sy, 10, 0, Math.PI * 2);
+    ctx.strokeStyle = '#fbbf24'; ctx.lineWidth = 3;
+    ctx.setLineDash([4, 3]); ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillStyle = color + '60'; ctx.fill();
+    ctx.fillStyle = '#fbbf24';
+    ctx.font = 'bold 12px "JetBrains Mono"'; ctx.textAlign = 'left';
+    ctx.fillText('?', sx + 14, sy - 4);
+  }
+
+  // 活动面板高亮边框
+  if (lm.activeSide === side) {
+    ctx.strokeStyle = '#38bdf8'; ctx.lineWidth = 3; ctx.setLineDash([]);
+    ctx.strokeRect(1, 1, canvas.width - 2, canvas.height - 2);
+  }
+}
+
+// ════════════════════════════════════════════════════════════
+// 导入 / 导出
+// ════════════════════════════════════════════════════════════
+document.getElementById('btnExport').addEventListener('click', () => {
+  const data = lm.pairs.map(p => ({ src: [p.src.x, p.src.y], dst: [p.dst.x, p.dst.y] }));
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' }));
+  a.download = 'tps_landmarks.json';
+  a.click();
+  showToast(`已导出 ${data.length} 对控制点`, 'success');
+});
+
+document.getElementById('btnImport').addEventListener('click', () => {
+  document.getElementById('importInput').click();
+});
+
+document.getElementById('importInput').addEventListener('change', e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = ev => {
+    try {
+      const raw = JSON.parse(ev.target.result);
+      lm.pairs = raw.map(item => {
+        if (item.src && item.dst) {
+          return { src: { x: item.src[0], y: item.src[1] }, dst: { x: item.dst[0], y: item.dst[1] } };
+        }
+        if (Array.isArray(item) && item.length === 2) {
+          return { src: { x: item[0][0], y: item[0][1] }, dst: { x: item[1][0], y: item[1][1] } };
+        }
+        return null;
+      }).filter(Boolean);
+      lm.pendingSrc = null; lm.activeSide = 'tic';
+      updateStatus(); updateList(); updateButtons(); renderAll();
+      showToast(`已导入 ${lm.pairs.length} 对控制点`, 'success');
+    } catch (err) { showToast('JSON 解析失败: ' + err.message, 'error'); }
+  };
+  reader.readAsText(file);
+  e.target.value = '';
+});
+
+document.getElementById('btnUndo').addEventListener('click', undoLast);
+
+document.getElementById('btnClear').addEventListener('click', () => {
+  if (lm.pairs.length > 0 && !confirm('确定要清空所有控制点？')) return;
+  lm.pairs = []; lm.pendingSrc = null; lm.activeSide = 'tic';
+  updateStatus(); updateList(); updateButtons(); renderAll();
+});
+
+// ════════════════════════════════════════════════════════════
+// 执行 TPS 配准
+// ════════════════════════════════════════════════════════════
+document.getElementById('btnRunTPS').addEventListener('click', async () => {
+  const btn = document.getElementById('btnRunTPS');
+  btn.disabled = true;
+  btn.textContent = '配准中...';
+
+  const pairs = lm.pairs.map(p => ({
+    src: [p.src.x, p.src.y],
+    dst: [p.dst.x, p.dst.y],
+  }));
+
+  try {
+    const resp = await fetch('/tps-reg/api/run', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ pairs }),
+    });
+    const data = await resp.json();
+
+    if (data.status !== 'success') {
+      showToast(data.message || 'TPS 配准失败', 'error');
+      btn.disabled = false; btn.textContent = '▶ 执行 TPS 配准';
+      return;
+    }
+
+    const m = data.metrics;
+    document.getElementById('tpsMetrics').innerHTML = `
+      <div class="metric-chip"><div class="val"      >${(m.iou_before       || 0).toFixed(4)}</div><div class="lbl">刚性 IoU</div></div>
+      <div class="metric-chip"><div class="val green">${(m.iou_after        || 0).toFixed(4)}</div><div class="lbl">TPS IoU</div></div>
+      <div class="metric-chip"><div class="val"      >${(m.mean_displacement|| 0).toFixed(1)}</div><div class="lbl">均值位移 px</div></div>
+      <div class="metric-chip"><div class="val"      >${(m.max_displacement || 0).toFixed(1)}</div><div class="lbl">最大位移 px</div></div>
+      <div class="metric-chip"><div class="val"      >${data.n_pairs}</div>                         <div class="lbl">控制点对数</div></div>
+    `;
+    if (data.overlay_img) {
+      document.getElementById('tpsOverlay').innerHTML =
+        `<img src="${data.overlay_img}" style="max-width:100%; border-radius:6px;">`;
+    }
+    document.getElementById('tpsResultArea').style.display = 'block';
+    btn.textContent = '▶ 重新执行 TPS';
+    btn.disabled = false;
+    showToast('TPS 配准完成', 'success');
+  } catch (err) {
+    showToast('请求失败: ' + err.message, 'error');
+    btn.disabled = false; btn.textContent = '▶ 执行 TPS 配准';
+  }
+});
+
+// ════════════════════════════════════════════════════════════
+// 键盘快捷键
+// ════════════════════════════════════════════════════════════
+document.addEventListener('keydown', e => {
+  if (e.ctrlKey && e.key === 'z') { e.preventDefault(); undoLast(); }
+});
+
+// ════════════════════════════════════════════════════════════
+// 启动
+// ════════════════════════════════════════════════════════════
+loadSessionImages();
+updateButtons();
+</script>
+{% endblock %}

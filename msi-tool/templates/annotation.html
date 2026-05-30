@@ -1,0 +1,192 @@
+{% extends "base.html" %}
+{% block title %}代谢物注释{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h2>代谢物注释</h2>
+  <p class="page-desc">基于精确质量匹配进行代谢物候选注释（加合物配置参考 Zhu et al. 2022, Anal Chem）</p>
+</div>
+
+<div class="card">
+  <div class="card-title">注释参数</div>
+  <div class="param-grid" style="grid-template-columns: 2fr 1.5fr 1fr 1fr;">
+    <div class="param-item">
+      <label>数据库 CSV 文件</label>
+      <div style="display:flex; gap:0.4rem; align-items:center;">
+        <input type="file" id="dbFile" accept=".csv" class="input-num" style="flex:1; padding:0.3rem; min-width:0;">
+        <button class="btn btn-secondary" id="btnUploadDb" type="button" style="white-space:nowrap;">上传</button>
+      </div>
+      <span class="hint" id="dbStatus">未上传（必需列：id, name, formula, exact_mass；上限 50MB）</span>
+    </div>
+    <div class="param-item">
+      <label>离子模式</label>
+      <select id="ionMode" class="input-num">
+        <option value="positive">正离子模式（6种加合物）</option>
+        <option value="negative">负离子模式（3种加合物）</option>
+      </select>
+      <span class="hint" id="adductHint">
+        [M+H]⁺, [M+Na]⁺, [M+K]⁺, [M+NH₄]⁺, [M+H-H₂O]⁺, [M]⁺
+      </span>
+    </div>
+    <div class="param-item">
+      <label>ppm 容差</label>
+      <input type="number" id="ppmTol" value="10" min="0.1" max="50" step="0.1" class="input-num">
+    </div>
+    <div class="param-item">
+      <label>每个 m/z 保留候选数</label>
+      <input type="number" id="topN" value="5" min="1" max="20" class="input-num">
+    </div>
+  </div>
+  <div class="panel-actions" style="margin-top:1rem;">
+    <button class="btn btn-primary" id="btnAnn">▶ 执行注释</button>
+    <a class="btn btn-secondary" id="btnAnnDownload" href="/annotation/api/download_csv" download style="display:none;">↓ 下载注释 CSV</a>
+  </div>
+</div>
+
+<div class="card" id="annResult" style="display:none; margin-top:0.8rem;">
+  <div class="card-title">注释结果</div>
+  <div class="metrics-row" id="annInfo"></div>
+  <div style="overflow-x:auto; margin-top:0.8rem;">
+    <table style="width:100%; border-collapse:collapse; font-size:0.82rem;">
+      <thead>
+        <tr style="border-bottom:1px solid var(--border); color:var(--text-muted);">
+          <th style="text-align:left; padding:0.5rem 0.8rem;">m/z</th>
+          <th style="text-align:left; padding:0.5rem 0.8rem;">Adduct</th>
+          <th style="text-align:left; padding:0.5rem 0.8rem;">Name</th>
+          <th style="text-align:left; padding:0.5rem 0.8rem;">Formula</th>
+          <th style="text-align:right; padding:0.5rem 0.8rem;">ppm</th>
+          <th style="text-align:right; padding:0.5rem 0.8rem;">Score</th>
+        </tr>
+      </thead>
+      <tbody id="annBody"></tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// 切换离子模式时更新加合物提示
+document.getElementById('ionMode').addEventListener('change', function() {
+  const hint = document.getElementById('adductHint');
+  if (this.value === 'positive') {
+    hint.textContent = '[M+H]⁺, [M+Na]⁺, [M+K]⁺, [M+NH₄]⁺, [M+H-H₂O]⁺, [M]⁺';
+  } else {
+    hint.textContent = '[M-H]⁻, [M+Cl]⁻, [M-H-H₂O]⁻';
+  }
+});
+
+function fmtSize(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / 1024 / 1024).toFixed(2) + ' MB';
+}
+
+async function refreshDbStatus() {
+  const el = document.getElementById('dbStatus');
+  try {
+    const r = await fetch('/annotation/api/db_status');
+    const d = await r.json();
+    if (d.uploaded) {
+      el.textContent = `已上传：${d.name}（${fmtSize(d.size)}）`;
+      el.style.color = 'var(--success, #4caf50)';
+    } else {
+      el.textContent = '未上传（必需列：id, name, formula, exact_mass；上限 50MB）';
+      el.style.color = '';
+    }
+  } catch (e) {
+    /* 静默失败：不阻塞页面 */
+  }
+}
+
+document.getElementById('btnUploadDb').addEventListener('click', async () => {
+  const inp = document.getElementById('dbFile');
+  if (!inp.files || inp.files.length === 0) {
+    showToast('请先选择 CSV 文件', 'error');
+    return;
+  }
+  const file = inp.files[0];
+  // 客户端先做一次大小预检（最终以服务端为准）
+  if (file.size > 50 * 1024 * 1024) {
+    showToast('文件超过 50MB 上限', 'error');
+    return;
+  }
+
+  const fd = new FormData();
+  fd.append('db_file', file);
+  const btn = document.getElementById('btnUploadDb');
+  btn.disabled = true;
+  btn.textContent = '上传中...';
+  try {
+    const r = await fetch('/annotation/api/upload_db', { method: 'POST', body: fd });
+    const d = await r.json();
+    if (d.status === 'success') {
+      showToast(`数据库上传成功（${fmtSize(d.size)}）`, 'success');
+      refreshDbStatus();
+    } else {
+      showToast('上传失败：' + d.message, 'error', 8000);
+    }
+  } catch (e) {
+    showToast('请求失败：' + e.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '上传';
+  }
+});
+
+// 页面加载时查询当前 session 的数据库状态
+refreshDbStatus();
+
+document.getElementById('btnAnn').addEventListener('click', async () => {
+  const mode = document.getElementById('ionMode').value;
+  const ppmTol = parseFloat(document.getElementById('ppmTol').value);
+  const topN = parseInt(document.getElementById('topN').value);
+
+  try {
+    const resp = await fetch('/annotation/api/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        mode: mode,
+        ppm_tolerance: ppmTol,
+        top_n: topN,
+      }),
+    });
+    const data = await resp.json();
+    if (data.status !== 'success') {
+      showToast('注释失败：' + data.message, 'error', 8000);
+      console.error(data.traceback || '');
+      return;
+    }
+
+    const info = data.info;
+    document.getElementById('annInfo').innerHTML = [
+      { val: info.n_features_input, lbl: '输入 m/z 数' },
+      { val: info.n_features_annotated, lbl: '已注释特征数' },
+      { val: info.annotation_rate, lbl: '注释率' },
+      { val: info.n_db_compounds, lbl: '数据库条目数' },
+      { val: info.n_hits, lbl: '匹配候选总数' },
+      { val: info.ppm_tolerance, lbl: 'ppm 容差' },
+    ].map(c => `<div class="metric-chip"><div class="val">${c.val}</div><div class="lbl">${c.lbl}</div></div>`).join('');
+
+    const tbody = document.getElementById('annBody');
+    tbody.innerHTML = data.preview.map(r => `
+      <tr style="border-bottom:1px solid var(--border);">
+        <td style="padding:0.45rem 0.8rem; font-family:var(--mono);">${Number(r.mz_observed).toFixed(4)}</td>
+        <td style="padding:0.45rem 0.8rem;">${r.adduct}</td>
+        <td style="padding:0.45rem 0.8rem;">${r.db_name}</td>
+        <td style="padding:0.45rem 0.8rem; font-family:var(--mono);">${r.formula}</td>
+        <td style="padding:0.45rem 0.8rem; text-align:right; font-family:var(--mono);">${Number(r.ppm_error).toFixed(3)}</td>
+        <td style="padding:0.45rem 0.8rem; text-align:right; font-family:var(--mono);">${Number(r.score_mass).toFixed(3)}</td>
+      </tr>
+    `).join('');
+
+    document.getElementById('annResult').style.display = 'block';
+    document.getElementById('btnAnnDownload').style.display = data.csv_available ? 'inline-flex' : 'none';
+    showToast('注释完成', 'success');
+  } catch (e) {
+    showToast('请求失败：' + e.message, 'error');
+  }
+});
+</script>
+{% endblock %}

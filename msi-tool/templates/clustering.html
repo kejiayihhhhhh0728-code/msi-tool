@@ -1,0 +1,371 @@
+{% extends "base.html" %}
+{% block title %}降维聚类{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h2>降维与空间聚类</h2>
+  <p class="page-desc">
+    支持两条降维路线（PCA / UMAP-DR），7 种聚类方法并列对比：
+    KMeans · Agglomerative · GMM · Spatial-Agg · Spectral · Leiden · HDBSCAN
+  </p>
+</div>
+
+<!-- ─── 参数面板 ─── -->
+<div class="card">
+  <div class="card-title">聚类参数</div>
+
+  <!-- 第一行：基础参数 -->
+  <div class="param-grid" style="grid-template-columns: repeat(4, 1fr);">
+
+    <div class="param-item">
+      <label>聚类数 k</label>
+      <input type="number" id="nClusters" value="5" min="2" max="20" class="input-num">
+      <span class="hint">所有方法使用相同 k（HDBSCAN 自动确定，忽略此值）</span>
+    </div>
+
+    <div class="param-item">
+      <label>降维路线</label>
+      <select id="drMethod" class="input-select" onchange="toggleDrParams()">
+        <option value="pca">路线 A：PCA</option>
+        <option value="umap_dr">路线 B：PCA → UMAP-DR</option>
+      </select>
+      <span class="hint">路线 B 在多维 UMAP 空间聚类（更慢，适合非线性结构）</span>
+    </div>
+
+    <div class="param-item">
+      <label>空间平滑半径</label>
+      <input type="number" id="spatialRadius" value="0.0" min="0" max="10" step="0.5" class="input-num">
+      <span class="hint">KD-tree 邻域半径（0=关闭）</span>
+    </div>
+
+    <div class="param-item">
+      <label>空间平滑权重 α</label>
+      <input type="number" id="spatialAlpha" value="0.0" min="0" max="1" step="0.1" class="input-num">
+      <span class="hint">0=关闭；1=纯邻域均值</span>
+    </div>
+
+    <div class="param-item">
+      <label>中值滤波核</label>
+      <input type="number" id="medianKernel" value="0" min="0" max="9" step="2" class="input-num">
+      <span class="hint">0=关闭；3/5 等奇数</span>
+    </div>
+
+    <div class="param-item">
+      <label>可视化 UMAP</label>
+      <select id="doUmapVis" class="input-select">
+        <option value="1">开启（较慢）</option>
+        <option value="0">关闭</option>
+      </select>
+      <span class="hint">2D 嵌入，仅用于可视化，始终从 PCA 空间生成</span>
+    </div>
+
+  </div>
+
+  <!-- PCA 参数组 -->
+  <div id="pcaParams" style="margin-top:0.8rem;">
+    <div style="font-size:0.8rem; color:var(--text-muted); margin-bottom:0.5rem; font-weight:600;">
+      PCA 参数（路线 A / B 共用）
+    </div>
+    <div class="param-grid" style="grid-template-columns: repeat(4, 1fr);">
+      <div class="param-item">
+        <label>PCA 固定维度</label>
+        <input type="number" id="pcaNComponents" value="30" min="5" max="200" class="input-num">
+        <span class="hint">默认 30（参考 Laskin 2021）</span>
+      </div>
+      <div class="param-item">
+        <label>PCA 累积方差阈值（可选）</label>
+        <input type="number" id="pcaVarianceThreshold" value="0" min="0" max="0.99" step="0.05" class="input-num">
+        <span class="hint">0=不启用；设 0.95 则自动选维度（覆盖固定维度）</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- UMAP-DR 参数组（路线 B 时显示） -->
+  <div id="umapDrParams" style="margin-top:0.8rem; display:none;">
+    <div style="font-size:0.8rem; color:var(--text-muted); margin-bottom:0.5rem; font-weight:600;">
+      UMAP-DR 参数（路线 B 专用）
+    </div>
+    <div class="param-grid" style="grid-template-columns: repeat(4, 1fr);">
+      <div class="param-item">
+        <label>UMAP-DR 目标维度</label>
+        <input type="number" id="umapDrNComponents" value="10" min="2" max="30" class="input-num">
+        <span class="hint">建议 5-15（umap-learn 文档）</span>
+      </div>
+      <div class="param-item">
+        <label>UMAP-DR 邻居数</label>
+        <input type="number" id="umapDrNNeighbors" value="30" min="5" max="100" class="input-num">
+        <span class="hint">聚类用途建议 ≥30</span>
+      </div>
+      <div class="param-item">
+        <label>UMAP-DR 距离度量</label>
+        <select id="umapDrMetric" class="input-select">
+          <option value="cosine">cosine（Laskin 2021 推荐）</option>
+          <option value="euclidean">euclidean</option>
+          <option value="correlation">correlation</option>
+        </select>
+        <span class="hint">MSI 数据推荐 cosine</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- GMM / HDBSCAN 高级参数 -->
+  <div style="margin-top:0.8rem;">
+    <div style="font-size:0.8rem; color:var(--text-muted); margin-bottom:0.5rem; font-weight:600;">
+      GMM / HDBSCAN 高级参数
+    </div>
+    <div class="param-grid" style="grid-template-columns: repeat(4, 1fr);">
+      <div class="param-item">
+        <label>GMM BIC 自动选 k</label>
+        <select id="gmmAutoBic" class="input-select">
+          <option value="0">关闭（使用上方 k）</option>
+          <option value="1">开启（BIC 扫描）</option>
+        </select>
+        <span class="hint">参考 Laskin 2021；开启后较慢</span>
+      </div>
+      <div class="param-item">
+        <label>GMM BIC 扫描范围 ±</label>
+        <input type="number" id="gmmSearchRange" value="5" min="1" max="10" class="input-num">
+        <span class="hint">仅 BIC 开启时生效</span>
+      </div>
+      <div class="param-item">
+        <label>HDBSCAN min_cluster_size</label>
+        <input type="number" id="hdbscanMinClusterSize" value="100" min="5" max="1000" class="input-num">
+        <span class="hint">Laskin 2021 用 300；较小数据集可设 50-100</span>
+      </div>
+      <div class="param-item">
+        <label>HDBSCAN min_samples</label>
+        <input type="number" id="hdbscanMinSamples" value="30" min="1" max="200" class="input-num">
+        <span class="hint">Laskin 2021 用 30；越大越保守</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel-actions" style="margin-top:1rem;">
+    <button class="btn btn-primary" id="btnCluster">▶ 执行聚类</button>
+    <span style="font-size:0.8rem; color:var(--text-muted); margin-left:1rem;">
+      Spectral: 像素数 ≤8000 时启用 · Leiden: 需安装 leidenalg ·
+      HDBSCAN: 需安装 hdbscan 或 scikit-learn≥1.3
+    </span>
+  </div>
+
+  <!-- 进度 -->
+  <div id="clusterProgress" style="display:none; margin-top:0.8rem;">
+    <div class="progress-bar"><div class="progress-fill" style="animation: progressPulse 1.5s ease-in-out infinite;"></div></div>
+    <div style="font-size:0.78rem;color:var(--text-muted);margin-top:0.4rem;" id="clusterMsg">
+      正在计算，大数据集需要 1-3 分钟...
+    </div>
+  </div>
+</div>
+
+<!-- ─── 结果区（初始隐藏）─── -->
+<div id="clusterResult" style="display:none;">
+
+  <!-- 信息条 -->
+  <div class="card" style="margin-top:0.8rem;">
+    <div class="card-title">分析概览</div>
+    <div class="metrics-row" id="infoRow"></div>
+  </div>
+
+  <!-- 空间分布图 -->
+  <div class="card" style="margin-top:0.8rem;">
+    <div class="card-title">空间聚类分布（7 种方法并列）</div>
+    <div style="text-align:center;">
+      <img id="spatialImg" style="max-width:100%; border-radius:var(--radius); border:1px solid var(--border);">
+    </div>
+  </div>
+
+  <!-- 指标表格 -->
+  <div class="card" style="margin-top:0.8rem;">
+    <div class="card-title">各方法指标详情</div>
+    <div style="overflow-x:auto;">
+      <table id="metricsTable" style="width:100%; border-collapse:collapse; font-size:0.82rem;">
+        <thead>
+          <tr style="border-bottom:1px solid var(--border); color:var(--text-muted);">
+            <th style="text-align:left; padding:0.5rem 0.8rem;">方法</th>
+            <th style="text-align:right; padding:0.5rem 0.8rem;">实际 k</th>
+            <th style="text-align:right; padding:0.5rem 0.8rem;">Silhouette ↑</th>
+            <th style="text-align:right; padding:0.5rem 0.8rem;">CH Score ↑</th>
+            <th style="text-align:right; padding:0.5rem 0.8rem;">DB Score ↓</th>
+            <th style="text-align:center; padding:0.5rem 0.8rem;">状态</th>
+          </tr>
+        </thead>
+        <tbody id="metricsBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- UMAP 可视化图 -->
+  <div class="card" id="umapCard" style="margin-top:0.8rem; display:none;">
+    <div class="card-title">UMAP 可视化嵌入（7 种方法并列）</div>
+    <div style="text-align:center;">
+      <img id="umapImg" style="max-width:100%; border-radius:var(--radius); border:1px solid var(--border);">
+    </div>
+  </div>
+
+  <!-- 下载 -->
+  <div class="card" style="margin-top:0.8rem;">
+    <div class="card-title">导出结果</div>
+    <p style="color:var(--text-muted); font-size:0.82rem; margin-bottom:0.8rem;">
+      CSV 包含每个像素的坐标、UMAP 可视化嵌入坐标以及所有方法的聚类标签列
+      （cluster_kmeans、cluster_hdbscan 等）
+    </p>
+    <div class="panel-actions">
+      <a class="btn btn-primary" id="btnDownload" href="/clustering/api/download_csv" download>
+        ↓ 下载聚类结果 CSV
+      </a>
+    </div>
+  </div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<style>
+.hint { font-size:0.72rem; color:var(--text-muted); }
+@keyframes progressPulse {
+  0%   { width: 5%; }
+  50%  { width: 80%; }
+  100% { width: 95%; }
+}
+.progress-bar {
+  height: 4px;
+  background: var(--border);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.progress-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 2px;
+  width: 5%;
+}
+</style>
+<script>
+function toggleDrParams() {
+  const method = document.getElementById('drMethod').value;
+  document.getElementById('umapDrParams').style.display =
+    method === 'umap_dr' ? 'block' : 'none';
+}
+
+document.getElementById('btnCluster').addEventListener('click', async () => {
+  const nClusters     = parseInt(document.getElementById('nClusters').value);
+  const drMethod      = document.getElementById('drMethod').value;
+  const pcaNComponents    = parseInt(document.getElementById('pcaNComponents').value);
+  const pcaVarianceThreshold = parseFloat(document.getElementById('pcaVarianceThreshold').value);
+  const umapDrNComponents = parseInt(document.getElementById('umapDrNComponents').value);
+  const umapDrNNeighbors  = parseInt(document.getElementById('umapDrNNeighbors').value);
+  const umapDrMetric      = document.getElementById('umapDrMetric').value;
+  const spatialRadius = parseFloat(document.getElementById('spatialRadius').value);
+  const spatialAlpha  = parseFloat(document.getElementById('spatialAlpha').value);
+  const medianKernel  = parseInt(document.getElementById('medianKernel').value);
+  const doUmapVis     = document.getElementById('doUmapVis').value === '1';
+  const gmmAutoBic    = document.getElementById('gmmAutoBic').value === '1';
+  const gmmSearchRange = parseInt(document.getElementById('gmmSearchRange').value);
+  const hdbscanMinClusterSize = parseInt(document.getElementById('hdbscanMinClusterSize').value);
+  const hdbscanMinSamples     = parseInt(document.getElementById('hdbscanMinSamples').value);
+
+  // 参数校验
+  if (nClusters < 2 || nClusters > 20) { showToast('聚类数 k 范围：2~20', 'error'); return; }
+
+  const btn = document.getElementById('btnCluster');
+  btn.disabled = true;
+  document.getElementById('clusterProgress').style.display = 'block';
+  document.getElementById('clusterMsg').textContent =
+    drMethod === 'umap_dr'
+      ? '路线 B：PCA → UMAP-DR → 聚类，耗时较长，请稍候...'
+      : '路线 A：PCA → 聚类，请稍候...';
+  document.getElementById('clusterResult').style.display = 'none';
+
+  try {
+    const resp = await fetch('/clustering/api/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        n_clusters:               nClusters,
+        dr_method:                drMethod,
+        pca_n_components:         pcaNComponents,
+        pca_variance_threshold:   pcaVarianceThreshold,
+        umap_dr_n_components:     umapDrNComponents,
+        umap_dr_n_neighbors:      umapDrNNeighbors,
+        umap_dr_metric:           umapDrMetric,
+        spatial_radius:           spatialRadius,
+        spatial_alpha:            spatialAlpha,
+        median_kernel:            medianKernel,
+        do_umap_vis:              doUmapVis,
+        gmm_auto_bic:             gmmAutoBic,
+        gmm_search_range:         gmmSearchRange,
+        hdbscan_min_cluster_size: hdbscanMinClusterSize,
+        hdbscan_min_samples:      hdbscanMinSamples,
+      }),
+    });
+    const data = await resp.json();
+
+    document.getElementById('clusterProgress').style.display = 'none';
+    btn.disabled = false;
+
+    if (data.status !== 'success') {
+      showToast('聚类失败：' + data.message, 'error', 8000);
+      console.error(data.traceback);
+      return;
+    }
+
+    // 信息条
+    const info = data.info;
+    const drLabel = info.dr_method === 'umap_dr' ? 'UMAP-DR' : 'PCA';
+    document.getElementById('infoRow').innerHTML = [
+      { val: info.n_pixels.toLocaleString(),              lbl: '像素数' },
+      { val: info.n_mz_raw.toLocaleString(),              lbl: '原始 m/z' },
+      { val: info.n_features_after_filter.toLocaleString(), lbl: '过滤后特征' },
+      { val: info.n_pca_dims,                             lbl: 'PCA 维度' },
+      { val: info.n_dr_dims + ' (' + drLabel + ')',       lbl: '聚类降维维度' },
+      { val: (info.pca_variance_explained * 100).toFixed(1) + '%', lbl: 'PCA 方差解释率' },
+      { val: nClusters,                                   lbl: '目标 k' },
+    ].map(c =>
+      `<div class="metric-chip"><div class="val">${c.val}</div><div class="lbl">${c.lbl}</div></div>`
+    ).join('');
+
+    // 图片
+    document.getElementById('spatialImg').src = 'data:image/png;base64,' + data.spatial_img;
+
+    if (doUmapVis && data.umap_img) {
+      document.getElementById('umapImg').src = 'data:image/png;base64,' + data.umap_img;
+      document.getElementById('umapCard').style.display = 'block';
+    } else {
+      document.getElementById('umapCard').style.display = 'none';
+    }
+
+    // 指标表格
+    const tbody = document.getElementById('metricsBody');
+    tbody.innerHTML = data.metrics.map(m => {
+      const kActual = m.n_clusters_actual !== null ? m.n_clusters_actual : '—';
+      const sil = m.silhouette !== null ? m.silhouette.toFixed(4) : '—';
+      const ch  = m.ch_score   !== undefined && m.ch_score !== null
+                  ? (m.ch_score || 0).toFixed(1) : '—';
+      const db  = m.db_score   !== undefined && m.db_score !== null
+                  ? (m.db_score || 0).toFixed(4) : '—';
+      const tag = m.available
+        ? '<span style="color:var(--success)">✓ 完成</span>'
+        : '<span style="color:var(--text-muted)">跳过</span>';
+      return `<tr style="border-bottom:1px solid var(--border);">
+        <td style="padding:0.45rem 0.8rem; font-weight:500;">${m.display}</td>
+        <td style="text-align:right; padding:0.45rem 0.8rem; font-family:var(--mono);">${kActual}</td>
+        <td style="text-align:right; padding:0.45rem 0.8rem; font-family:var(--mono);">${sil}</td>
+        <td style="text-align:right; padding:0.45rem 0.8rem; font-family:var(--mono);">${ch}</td>
+        <td style="text-align:right; padding:0.45rem 0.8rem; font-family:var(--mono);">${db}</td>
+        <td style="text-align:center; padding:0.45rem 0.8rem;">${tag}</td>
+      </tr>`;
+    }).join('');
+
+    // 展示结果
+    document.getElementById('clusterResult').style.display = 'block';
+    document.getElementById('clusterResult').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    showToast('聚类完成', 'success');
+
+  } catch (e) {
+    document.getElementById('clusterProgress').style.display = 'none';
+    btn.disabled = false;
+    showToast('请求失败：' + e.message, 'error');
+  }
+});
+</script>
+{% endblock %}

@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{% block title %}PathoSpace-Met{% endblock %} — 病理组织空间代谢组学全流程分析平台</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+{% block head %}{% endblock %}
+</head>
+<body>
+
+<!-- ═══ 顶栏 ═══ -->
+<header class="topbar">
+  <div class="topbar-left">
+    <div class="logo">⬡</div>
+    <h1>PathoSpace-Met <span class="topbar-subtitle">病理组织空间代谢组学全流程分析平台</span></h1>
+  </div>
+  <div class="topbar-right">
+    <span class="session-badge" id="sessionBadge">就绪</span>
+  </div>
+</header>
+
+<!-- ═══ 主布局：侧边栏 + 内容区 ═══ -->
+<div class="app-layout">
+
+  <!-- 左侧导航栏 -->
+  <nav class="sidebar">
+
+    <!-- 批次管理 -->
+    <div class="sidebar-section-label">批次管理</div>
+    <a href="{{ url_for('batch.index') }}"
+       class="nav-item {% if active == 'batch' %}active{% endif %}">
+      <span class="nav-num">⊞</span>
+      <span class="nav-label">样本管理</span>
+    </a>
+
+    <div class="sidebar-divider"></div>
+
+    <!-- 第一阶段：MSI 数据分析 -->
+    <div class="sidebar-section-label">MSI 数据分析</div>
+    <a href="{{ url_for('data_import.index') }}"
+       class="nav-item {% if active == 'data_import' %}active{% endif %}">
+      <span class="nav-num">1</span>
+      <span class="nav-label">数据导入</span>
+    </a>
+    <a href="{{ url_for('annotation.index') }}"
+       class="nav-item {% if active == 'annotation' %}active{% endif %}">
+      <span class="nav-num">2</span>
+      <span class="nav-label">代谢物注释</span>
+    </a>
+    <a href="{{ url_for('clustering.index') }}"
+       class="nav-item {% if active == 'clustering' %}active{% endif %}">
+      <span class="nav-num">3</span>
+      <span class="nav-label">降维聚类</span>
+    </a>
+    <a href="{{ url_for('nmf_patterns.index') }}"
+       class="nav-item {% if active == 'nmf_patterns' %}active{% endif %}">
+      <span class="nav-num">4</span>
+      <span class="nav-label">空间 NMF</span>
+    </a>
+
+    <div class="sidebar-divider"></div>
+
+    <!-- 第二阶段：配准 -->
+    <div class="sidebar-section-label">MSI-HE 配准</div>
+    <a href="{{ url_for('rigid_reg.index') }}"
+       class="nav-item {% if active == 'rigid_reg' %}active{% endif %}">
+      <span class="nav-num">5</span>
+      <span class="nav-label">刚性配准</span>
+    </a>
+    <a href="{{ url_for('tps_reg.index') }}"
+       class="nav-item {% if active == 'tps_reg' %}active{% endif %}">
+      <span class="nav-num">6</span>
+      <span class="nav-label">TPS 精配准</span>
+    </a>
+    <a href="{{ url_for('super_resolution.index') }}"
+       class="nav-item {% if active == 'super_resolution' %}active{% endif %}">
+      <span class="nav-num">SR</span>
+      <span class="nav-label">超分辨</span>
+    </a>
+
+    <div class="sidebar-divider"></div>
+
+    <!-- 第三阶段：联合分析 -->
+    <div class="sidebar-section-label">联合分析</div>
+    <a href="{{ url_for('roi_extract.index') }}"
+       class="nav-item {% if active == 'roi_extract' %}active{% endif %}">
+      <span class="nav-num">7</span>
+      <span class="nav-label">ROI 标注</span>
+    </a>
+    <a href="{{ url_for('diff_metabolites.index') }}"
+       class="nav-item {% if active == 'diff_metabolites' %}active{% endif %}">
+      <span class="nav-num">8</span>
+      <span class="nav-label">差异代谢物</span>
+    </a>
+    <a href="{{ url_for('rf_classifier.index') }}"
+       class="nav-item {% if active == 'rf_classifier' %}active{% endif %}">
+      <span class="nav-num">9</span>
+      <span class="nav-label">分类器</span>
+    </a>
+    <a href="{{ url_for('spatial_heatmap.index') }}"
+       class="nav-item {% if active == 'spatial_heatmap' %}active{% endif %}">
+      <span class="nav-num">10</span>
+      <span class="nav-label">空间热图</span>
+    </a>
+    <a href="{{ url_for('pathway.index') }}"
+       class="nav-item {% if active == 'pathway' %}active{% endif %}">
+      <span class="nav-num">11</span>
+      <span class="nav-label">通路富集</span>
+    </a>
+
+  </nav>
+
+  <!-- 主内容区 -->
+  <main class="main-content">
+
+    {% if active != 'batch' %}
+    <!-- 当前样本状态条（除样本管理页外都显示）-->
+    <div id="activeSampleBar" style="display:none;
+         margin-bottom:0.9rem; padding:0.55rem 0.9rem;
+         background:var(--bg-card); border:1px solid var(--border); border-radius:6px;
+         font-size:0.85rem; display:flex; gap:0.6rem; align-items:center; flex-wrap:wrap;">
+      <span style="color:var(--text-muted);">当前样本</span>
+      <span id="asbName" style="font-weight:500;">— —</span>
+      <span id="asbGroup" style="color:var(--text-muted); font-size:0.78rem;"></span>
+      <span style="flex:1;"></span>
+      <span id="asbBatchName" style="color:var(--text-muted); font-size:0.78rem;"></span>
+      <a href="{{ url_for('batch.index') }}"
+         style="color:var(--accent); text-decoration:none; font-size:0.82rem;">切换样本 →</a>
+    </div>
+    {% endif %}
+
+    {% block content %}{% endblock %}
+  </main>
+
+</div>
+
+<!-- ═══ 全局提示消息 ═══ -->
+<div class="toast-container" id="toastContainer"></div>
+
+<!-- 基础 JS（toast 等全局工具）-->
+<script>
+function showToast(msg, type='info', duration=3500) {
+  const c = document.getElementById('toastContainer');
+  const t = document.createElement('div');
+  t.className = `toast ${type}`;
+  t.textContent = msg;
+  c.appendChild(t);
+  setTimeout(() => t.remove(), duration);
+}
+
+// 全局：拉取并显示当前样本/批次（除样本管理页外的页面顶部状态条）
+(async function loadActiveSampleBar() {
+  const bar = document.getElementById('activeSampleBar');
+  if (!bar) return;
+  try {
+    const r = await fetch('/batch/api/state');
+    const d = await r.json();
+    if (d.status !== 'ok') return;
+    const cur = (d.samples || []).find(s => s.id === d.current_sample_id);
+    document.getElementById('asbName').textContent =
+      cur ? cur.name : '（尚未添加样本）';
+    document.getElementById('asbGroup').textContent =
+      cur && cur.group ? `[${cur.group}]` : '';
+    document.getElementById('asbBatchName').textContent =
+      `批次：${d.current_batch_name || ''}`;
+    bar.style.display = 'flex';
+  } catch (e) { /* silent */ }
+})();
+</script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

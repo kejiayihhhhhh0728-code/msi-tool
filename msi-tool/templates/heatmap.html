@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+{% block title %}空间热图{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h2>差异代谢物空间热图</h2>
+  <p class="page-desc">基于差异代谢物列表，在每个样本的整张切片上显示目标代谢物空间分布。</p>
+</div>
+
+<div class="card">
+  <div class="card-title">渲染参数</div>
+  <div class="param-grid">
+    <div class="param-item">
+      <label>组织 / tissue</label>
+      <select id="tissueSelect" class="input-select"><option value="">正在读取...</option></select>
+    </div>
+    <div class="param-item" style="grid-column: span 2;">
+      <label>选择代谢物</label>
+      <select id="mzSelect" class="input-select">
+        <option value="">— 请先完成差异代谢物筛选 —</option>
+      </select>
+    </div>
+    <div class="param-item">
+      <label>配色方案</label>
+      <select id="colormapSelect" class="input-select">
+        <option value="magma">magma</option>
+        <option value="hot">hot</option>
+        <option value="viridis">viridis</option>
+        <option value="plasma">plasma</option>
+        <option value="RdYlBu_r">RdYlBu_r</option>
+      </select>
+    </div>
+  </div>
+  <div class="panel-actions">
+    <button class="btn btn-primary" id="btnRenderHeatmap">渲染热图</button>
+  </div>
+</div>
+
+<div class="result-placeholder" id="heatmapPlaceholder">
+  <div class="placeholder-icon">10</div>
+  <div>渲染完成后，整张切片的代谢物空间热图拼图将显示在此</div>
+</div>
+
+<div class="card" id="heatmapResult" style="display:none;">
+  <div class="card-title" id="heatmapTitle">空间热图</div>
+  <img id="heatmapImg" src="" alt="空间热图" style="width:100%; background:white; border-radius:6px;">
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let tissueData = [];
+const $ = id => document.getElementById(id);
+function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+
+async function loadStatus(){
+  const r = await fetch('/heatmap/api/status');
+  const d = await r.json();
+  tissueData = d.tissues || [];
+  if (!tissueData.length) {
+    $('tissueSelect').innerHTML = '<option value="">暂无 tissue</option>';
+    $('btnRenderHeatmap').disabled = true;
+    return;
+  }
+  $('tissueSelect').innerHTML = tissueData.map(t => `<option value="${esc(t.name)}">${esc(t.name)} (${(t.metabolites||[]).length} 个)</option>`).join('');
+  updateMetSelect();
+}
+
+function updateMetSelect(){
+  const t = tissueData.find(x => x.name === $('tissueSelect').value);
+  const mets = (t && t.metabolites) || [];
+  if (!mets.length) {
+    $('mzSelect').innerHTML = '<option value="">该 tissue 暂无模块8结果</option>';
+    return;
+  }
+  $('mzSelect').innerHTML = mets.map(m => {
+    const label = `${m.id} | log2FC=${Number(m.log2fc || 0).toPrecision(3)} | FDR=${Number(m.fdr || 1).toPrecision(3)} | ${m.change || ''}`;
+    return `<option value="${esc(m.id)}">${esc(label)}</option>`;
+  }).join('');
+}
+
+$('tissueSelect').addEventListener('change', updateMetSelect);
+
+$('btnRenderHeatmap').addEventListener('click', async () => {
+  const tissue = $('tissueSelect').value;
+  const metabolite = $('mzSelect').value;
+  if (!tissue || !metabolite) return showToast('请选择 tissue 和代谢物', 'error');
+  const btn = $('btnRenderHeatmap');
+  btn.disabled = true;
+  $('heatmapResult').style.display = 'none';
+  $('heatmapPlaceholder').style.display = 'flex';
+  $('heatmapPlaceholder').innerHTML = '<div class="placeholder-icon">...</div><div>正在渲染空间热图</div>';
+  try {
+    const r = await fetch('/heatmap/api/render', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({tissue, metabolite, colormap:$('colormapSelect').value})
+    });
+    const d = await r.json();
+    if (d.status !== 'ok') throw new Error(d.message || '热图渲染失败');
+    $('heatmapPlaceholder').style.display = 'none';
+    $('heatmapResult').style.display = 'block';
+    $('heatmapTitle').textContent = `${d.tissue} / ${d.metabolite} (${d.n_panels} 张切片)`;
+    $('heatmapImg').src = 'data:image/png;base64,' + d.heatmap_img;
+    showToast('空间热图渲染完成', 'success');
+  } catch(e) {
+    $('heatmapPlaceholder').innerHTML = `<div class="placeholder-icon">!</div><div>${esc(e.message)}</div>`;
+    showToast(e.message, 'error', 7000);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+loadStatus();
+</script>
+{% endblock %}

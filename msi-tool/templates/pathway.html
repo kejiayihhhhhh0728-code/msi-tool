@@ -1,0 +1,273 @@
+{% extends "base.html" %}
+{% block title %}通路富集{% endblock %}
+
+{% block head %}
+<style>
+.plot-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:1rem; }
+.plot-card { background:var(--bg-card); border:1px solid var(--border); border-radius:8px; padding:0.8rem; }
+.plot-card img { width:100%; background:white; border-radius:6px; display:block; }
+.result-table { width:100%; border-collapse:collapse; font-size:0.8rem; }
+.result-table th { text-align:left; color:var(--text-muted); border-bottom:1px solid var(--border); padding:0.55rem; white-space:nowrap; }
+.result-table td { border-bottom:1px solid var(--border); padding:0.5rem 0.55rem; vertical-align:top; }
+.num { font-family:var(--mono); white-space:nowrap; }
+@media (max-width: 1100px) { .plot-grid { grid-template-columns:1fr; } }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h2>通路富集分析</h2>
+  <p class="page-desc">读取模块8差异代谢物结果，结合模块2注释中的 KEGG ID 和本地 GMT 文件，离线执行 Up/Down 通路富集分析。</p>
+</div>
+
+<div class="card">
+  <div class="card-title">富集参数</div>
+  <div class="param-grid">
+    <div class="param-item">
+      <label>组织 / tissue</label>
+      <select id="tissueSelect" class="input-select"><option value="">正在读取...</option></select>
+    </div>
+    <div class="param-item">
+      <label>代谢物 FDR 阈值</label>
+      <input type="number" id="fdrCutoff" value="0.05" min="0.001" max="0.5" step="0.005" class="input-num">
+    </div>
+    <div class="param-item">
+      <label>|log2FC| 阈值</label>
+      <input type="number" id="fcCutoff" value="0.263" min="0" max="5" step="0.05" class="input-num">
+    </div>
+    <div class="param-item">
+      <label>通路 FDR 阈值</label>
+      <input type="number" id="pathwayCutoff" value="0.05" min="0.001" max="0.5" step="0.005" class="input-num">
+    </div>
+    <div class="param-item">
+      <label>VIP 阈值</label>
+      <input type="number" id="vipCutoff" value="1.0" min="0.5" max="5" step="0.1" class="input-num">
+    </div>
+    <div class="param-item" style="justify-content:end;">
+      <label style="display:flex; align-items:center; gap:0.45rem; color:var(--text-dim);">
+        <input type="checkbox" id="useVip" style="accent-color:var(--accent);"> 要求 VIP 达标
+      </label>
+    </div>
+  </div>
+  <div class="panel-actions">
+    <button class="btn btn-primary" id="btnRun">运行通路富集</button>
+    <button class="btn btn-secondary" id="btnExport" disabled>导出 Excel</button>
+  </div>
+</div>
+
+<div id="metrics" class="metrics-row" style="display:none;">
+  <div class="metric-chip"><div class="val" id="mMapped">0</div><div class="lbl">映射代谢物</div></div>
+  <div class="metric-chip"><div class="val" id="mBg">0</div><div class="lbl">背景 KEGG</div></div>
+  <div class="metric-chip"><div class="val" id="mGmt">0</div><div class="lbl">GMT 通路</div></div>
+  <div class="metric-chip"><div class="val" id="mSig">0</div><div class="lbl">显著通路</div></div>
+</div>
+
+<div class="result-placeholder" id="placeholder">
+  <div class="placeholder-icon">11</div>
+  <div>分析完成后，Up/Down 富集 dotplot 与结果表将显示在此</div>
+</div>
+
+<div id="result" style="display:none;">
+  <div class="plot-grid" id="plotGrid"></div>
+  <div class="card mt-2">
+    <div class="card-title">富集结果 Top 50</div>
+    <div style="overflow:auto;">
+      <table class="result-table">
+        <thead><tr><th>Direction</th><th>Pathway</th><th>FDR</th><th>P value</th><th>Overlap</th><th>Hits</th></tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card mt-2" id="spatialCard">
+    <div class="card-title">空间通路活性热图（Mode B）</div>
+    <p style="color:var(--text-dim); font-size:0.85rem; margin:0 0 0.6rem 0;">
+      将上述显著通路映射回每个样本的全像素空间，对通路成员的 z-score 取均值得到 per-pixel 通路活性。
+      用于把过代表性分析结果与组织空间结构对照。
+    </p>
+    <div class="form-row" style="display:flex; flex-wrap:wrap; gap:0.6rem 1rem; align-items:flex-end;">
+      <div style="flex:1 1 280px;">
+        <label style="font-size:0.8rem; color:var(--text-dim); display:block; margin-bottom:0.4rem;">显著通路（多选，默认全部）</label>
+        <select class="input-field" id="spatialPwSelect" multiple size="6" style="width:100%;"></select>
+      </div>
+      <div>
+        <label style="font-size:0.8rem; color:var(--text-dim); display:block; margin-bottom:0.4rem;">m/z 容差 (Da)</label>
+        <input class="input-field" id="spatialTol" type="number" step="0.001" value="0.005" style="width:120px;">
+      </div>
+      <button class="btn btn-primary" id="btnSpatial" disabled>生成空间热图</button>
+    </div>
+    <div id="spatialPlaceholder" style="color:var(--text-muted); font-size:0.85rem; margin-top:0.6rem;">
+      运行通路富集后，发现的显著通路会出现在此处供选择。
+    </div>
+    <div id="spatialResults" style="margin-top:1rem;"></div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let currentTissue = '';
+const $ = id => document.getElementById(id);
+function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));}
+const fmt = (v,d=3) => (v===null||v===undefined||Number.isNaN(Number(v))) ? '-' : Number(v).toPrecision(d);
+
+async function loadStatus(){
+  const r = await fetch('/pathway/api/status');
+  const d = await r.json();
+  const tissues = d.tissues || [];
+  if (!d.gmt_available) showToast('缺少 GMT 文件，通路模块不可用', 'error', 8000);
+  if (!tissues.length) {
+    $('tissueSelect').innerHTML = '<option value="">暂无可分析 tissue</option>';
+    $('btnRun').disabled = true;
+    return;
+  }
+  $('tissueSelect').innerHTML = tissues.map(t =>
+    `<option value="${esc(t.name)}">${esc(t.name)} (${t.n_samples} 对${t.has_diff ? '' : '，未跑模块8'})</option>`
+  ).join('');
+  currentTissue = $('tissueSelect').value;
+}
+
+$('tissueSelect').addEventListener('change', () => { currentTissue = $('tissueSelect').value; $('btnExport').disabled = true; });
+
+$('btnRun').addEventListener('click', async () => {
+  const tissue = $('tissueSelect').value;
+  if (!tissue) return showToast('请选择 tissue', 'error');
+  const btn = $('btnRun');
+  btn.disabled = true;
+  $('btnExport').disabled = true;
+  $('placeholder').style.display = 'flex';
+  $('placeholder').innerHTML = '<div class="placeholder-icon">...</div><div>正在执行离线 GMT 富集分析</div>';
+  $('result').style.display = 'none';
+  try {
+    const r = await fetch('/pathway/api/run', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({
+        tissue,
+        fdr_cutoff:Number($('fdrCutoff').value),
+        fc_cutoff:Number($('fcCutoff').value),
+        pathway_sig_cutoff:Number($('pathwayCutoff').value),
+        use_vip:$('useVip').checked,
+        vip_cutoff:Number($('vipCutoff').value),
+      })
+    });
+    const d = await r.json();
+    if (d.status !== 'ok') throw new Error(d.message || '通路富集失败');
+    renderResult(d);
+    currentTissue = d.tissue;
+    showToast('通路富集完成', 'success');
+  } catch(e) {
+    $('placeholder').innerHTML = `<div class="placeholder-icon">!</div><div>${esc(e.message)}</div>`;
+    showToast(e.message, 'error', 9000);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+$('btnExport').addEventListener('click', async () => {
+  const r = await fetch('/pathway/api/export', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({tissue:currentTissue})});
+  if (!r.ok) return showToast('导出失败，请先运行通路富集', 'error');
+  const blob = await r.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = `pathway_${currentTissue}.xlsx`; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+});
+
+function renderResult(d){
+  $('placeholder').style.display = 'none';
+  $('result').style.display = 'block';
+  $('metrics').style.display = 'flex';
+  $('mMapped').textContent = d.mapped_metabolites;
+  $('mBg').textContent = d.background_size;
+  $('mGmt').textContent = d.gmt_pathways;
+  $('mSig').textContent = (d.sig_pathways || []).length;
+  const plots = [];
+  for (const dir of ['Up','Down']) {
+    const img = d.outputs?.[dir]?.dotplot_img;
+    if (img) plots.push([`${dir} 富集 dotplot`, img]);
+  }
+  $('plotGrid').innerHTML = plots.map(([title,img]) =>
+    `<div class="plot-card"><div class="card-title">${title}</div><img src="data:image/png;base64,${img}"></div>`
+  ).join('');
+  const allRows = [];
+  for (const dir of ['Up','Down']) {
+    (d.outputs?.[dir]?.table || []).forEach(r => allRows.push({...r, Direction:dir}));
+  }
+  $('rows').innerHTML = allRows.map(r => `
+    <tr><td>${r.Direction}</td><td>${esc(r.Term)}</td><td class="num">${fmt(r['Adjusted P-value'],3)}</td>
+    <td class="num">${fmt(r['P-value'],3)}</td><td class="num">${esc(r.Overlap)}</td><td>${esc(r.Hits)}</td></tr>
+  `).join('') || '<tr><td colspan="6" style="color:var(--text-muted);">没有富集结果</td></tr>';
+  $('btnExport').disabled = false;
+  populateSpatialPathways(d.sig_pathways || []);
+}
+
+function populateSpatialPathways(pathways){
+  const sel = $('spatialPwSelect');
+  sel.innerHTML = pathways.map(p => `<option value="${esc(p)}" selected>${esc(p)}</option>`).join('');
+  const ph = $('spatialPlaceholder');
+  if (pathways.length === 0) {
+    ph.textContent = '当前阈值下无显著通路。可放宽 FDR 或 |log₂FC| 阈值后重试。';
+    $('btnSpatial').disabled = true;
+  } else {
+    ph.textContent = `已发现 ${pathways.length} 条显著通路，默认全部勾选；按 Ctrl/Cmd 多选。`;
+    $('btnSpatial').disabled = false;
+  }
+  $('spatialResults').innerHTML = '';
+}
+
+$('btnSpatial').addEventListener('click', async () => {
+  const sel = $('spatialPwSelect');
+  const picks = Array.from(sel.selectedOptions).map(o => o.value);
+  if (picks.length === 0) return showToast('请至少选择一条通路', 'error');
+  const btn = $('btnSpatial');
+  btn.disabled = true;
+  $('spatialResults').innerHTML = '<div style="color:var(--text-dim); font-size:0.9rem;">正在加载逐样本 h5ad、计算通路活性...</div>';
+  try {
+    const r = await fetch('/pathway/api/spatial', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({
+        tissue: currentTissue,
+        pathways: picks,
+        mz_tolerance: Number($('spatialTol').value) || 0.005,
+      })
+    });
+    const d = await r.json();
+    if (d.status !== 'ok') throw new Error(d.message || '空间通路分析失败');
+    renderSpatial(d);
+    showToast(`完成：${d.n_samples} 个样本 × ${picks.length} 条通路`, 'success');
+  } catch(e) {
+    $('spatialResults').innerHTML = `<div style="color:#f87171;">${esc(e.message)}</div>`;
+    showToast(e.message, 'error', 9000);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+function renderSpatial(d){
+  const samples = d.samples || [];
+  if (samples.length === 0) {
+    $('spatialResults').innerHTML = '<div style="color:var(--text-muted);">无可用样本（请确认模块1-2已完成）</div>';
+    return;
+  }
+  const errBlock = (d.errors && d.errors.length)
+    ? `<div style="color:#fbbf24; font-size:0.8rem; margin-bottom:0.5rem;">提示：${d.errors.map(esc).join('；')}</div>`
+    : '';
+  const blocks = samples.map(s => {
+    const cards = Object.entries(s.pathways || {}).map(([pw, info]) => `
+      <div class="plot-card">
+        <div class="card-title" style="font-size:0.85rem;">${esc(pw)} <span style="color:var(--text-dim); font-weight:normal;">(${info.n_metabolites} mets)</span></div>
+        <img src="data:image/png;base64,${info.img}">
+      </div>
+    `).join('') || '<div style="color:var(--text-muted); font-size:0.85rem;">该样本下选定通路均无 KEGG 命中</div>';
+    return `
+      <div class="card mt-2">
+        <div class="card-title">${esc(s.sample_name)} <span style="color:var(--text-dim); font-weight:normal; font-size:0.85rem;">(${s.n_pixels} pixels, ${s.n_pathways} pathways)</span></div>
+        <div class="plot-grid">${cards}</div>
+      </div>
+    `;
+  }).join('');
+  $('spatialResults').innerHTML = errBlock + blocks;
+}
+
+loadStatus();
+</script>
+{% endblock %}

@@ -1,0 +1,253 @@
+{% extends "base.html" %}
+{% block title %}数据导入{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h2>数据导入与预处理</h2>
+  <p class="page-desc">上传 MSI 原始数据与 spot 坐标文件，执行 TIC / RMS 归一化，查看归一化效果</p>
+</div>
+
+<!-- ─── Step 1：上传文件 ─── -->
+<div class="card" id="cardUpload">
+  <div class="card-title">第一步：上传数据文件</div>
+
+  <div class="upload-zone" style="grid-template-columns:1fr 1fr 1fr;">
+    <!-- MSI 数据文件 -->
+    <div class="upload-card" id="cardMSI">
+      <div class="upload-icon">📄</div>
+      <div class="upload-title">MSI 数据文件</div>
+      <div class="upload-hint">
+        支持两种格式：<br>
+        · <strong>xlsx_txt</strong>（推荐）：Tab 分隔，行=像素，含 x/y 列，坐标文件可省略<br>
+        · <strong>mz_csv</strong>：分号分隔，行=m/z，需同时上传坐标文件
+      </div>
+      <input type="file" id="msiInput" accept=".csv,.txt,.tsv" hidden>
+      <div class="upload-status" id="msiStatus"></div>
+    </div>
+
+    <!-- Spot 坐标文件（可选） -->
+    <div class="upload-card" id="cardSpot">
+      <div class="upload-icon">📍</div>
+      <div class="upload-title">Spot 坐标文件 <span style="font-size:0.72rem;color:var(--text-muted);">（可选）</span></div>
+      <div class="upload-hint">
+        仅 mz_csv 格式需要。<br>
+        分号分隔，含 Spot index / x / y 列。<br>
+        xlsx_txt 格式内已含坐标，无需上传。
+      </div>
+      <input type="file" id="spotInput" accept=".csv,.txt,.tsv" hidden>
+      <div class="upload-status" id="spotStatus"></div>
+    </div>
+
+    <!-- 参数 -->
+    <div class="card" style="margin:0; background:var(--bg); border-style:dashed;">
+      <div class="card-title">解析参数</div>
+      <div class="param-item">
+        <label>空间分辨率（µm）</label>
+        <input type="number" id="resolution" value="20" min="1" max="500" class="input-num">
+        <span style="font-size:0.72rem;color:var(--text-muted);margin-top:0.2rem;">MSIpro 默认 20 µm</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel-actions" style="margin-top:1rem;">
+    <button class="btn btn-primary" id="btnParse" disabled>▶ 解析数据</button>
+  </div>
+
+  <!-- 进度条 -->
+  <div id="parseProgress" style="display:none; margin-top:0.8rem;">
+    <div class="progress-bar"><div class="progress-fill"></div></div>
+    <div style="font-size:0.78rem;color:var(--text-muted);margin-top:0.4rem;" id="parseMsg">正在解析，大文件需要 1-2 分钟...</div>
+  </div>
+</div>
+
+<!-- ─── Step 2：基本统计（解析后显示）─── -->
+<div class="card" id="cardStats" style="display:none;">
+  <div class="card-title">数据概览</div>
+  <div class="metrics-row" id="statsRow"></div>
+</div>
+
+<!-- ─── Step 3：归一化 ─── -->
+<div class="card" id="cardNorm" style="display:none;">
+  <div class="card-title">第二步：归一化</div>
+  <div class="radio-group">
+    <label class="radio-item">
+      <input type="radio" name="normMethod" value="TIC" checked>
+      <strong>TIC 归一化</strong>
+      <span class="radio-hint">每像素强度 ÷ 总离子流，消除厚度/喷涂不均匀</span>
+    </label>
+    <label class="radio-item">
+      <input type="radio" name="normMethod" value="RMS">
+      <strong>RMS 归一化</strong>
+      <span class="radio-hint">每像素强度 ÷ 均方根，对离群高值更鲁棒</span>
+    </label>
+  </div>
+  <div class="panel-actions" style="margin-top:0.8rem;">
+    <button class="btn btn-primary" id="btnNorm">▶ 执行归一化</button>
+  </div>
+
+  <div id="normProgress" style="display:none; margin-top:0.8rem;">
+    <div class="progress-bar"><div class="progress-fill"></div></div>
+    <div style="font-size:0.78rem;color:var(--text-muted);margin-top:0.4rem;">正在归一化...</div>
+  </div>
+</div>
+
+<!-- ─── Step 4：归一化结果 ─── -->
+<div id="normResult" style="display:none;">
+  <div class="card">
+    <div class="card-title" id="normResultTitle">归一化结果</div>
+    <div style="text-align:center; margin-bottom:0.8rem;">
+      <img id="histImg" style="max-width:100%; border-radius:var(--radius); border:1px solid var(--border);">
+    </div>
+    <div class="metrics-row" id="normStatsRow"></div>
+    <div style="margin-top:0.8rem; padding:0.6rem 0.8rem; background:var(--accent-dim);
+                border:1px solid var(--accent-border); border-radius:var(--radius-sm);
+                font-size:0.82rem; color:var(--accent);" id="normSaveMsg"></div>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+// ─── 状态 ───
+// sid 字段保留用于 UI 流程开关；后端不再依赖它（基于 session 的样本目录）
+let sid = null;
+let msiReady = false, spotReady = false;
+
+// ─── 上传卡片交互 ───
+function bindUpload(cardId, inputId, statusId, flagSetter) {
+  const card = document.getElementById(cardId);
+  const input = document.getElementById(inputId);
+  const status = document.getElementById(statusId);
+  card.addEventListener('click', () => input.click());
+  card.addEventListener('dragover', e => { e.preventDefault(); card.classList.add('drag-over'); });
+  card.addEventListener('dragleave', () => card.classList.remove('drag-over'));
+  card.addEventListener('drop', e => {
+    e.preventDefault(); card.classList.remove('drag-over');
+    if (e.dataTransfer.files.length) { input.files = e.dataTransfer.files; input.dispatchEvent(new Event('change')); }
+  });
+  input.addEventListener('change', function() {
+    if (this.files.length) {
+      const f = this.files[0];
+      const mb = (f.size / 1024 / 1024).toFixed(1);
+      status.textContent = `✓ ${f.name}  (${mb} MB)`;
+      card.classList.add('has-file');
+      flagSetter(true);
+      checkParseReady();
+    }
+  });
+}
+
+bindUpload('cardMSI', 'msiInput', 'msiStatus', v => msiReady = v);
+bindUpload('cardSpot', 'spotInput', 'spotStatus', v => spotReady = v);
+
+function checkParseReady() {
+  // spot 文件可选：只要有 MSI 文件即可解析
+  document.getElementById('btnParse').disabled = !msiReady;
+}
+
+// ─── 解析数据 ───
+document.getElementById('btnParse').addEventListener('click', async () => {
+  const msiFile = document.getElementById('msiInput').files[0];
+  const spotFile = document.getElementById('spotInput').files[0];
+  const resolution = document.getElementById('resolution').value;
+
+  const fd = new FormData();
+  fd.append('msi_file', msiFile);
+  fd.append('spot_file', spotFile);
+  fd.append('resolution', resolution);
+
+  document.getElementById('btnParse').disabled = true;
+  document.getElementById('parseProgress').style.display = 'block';
+  document.getElementById('parseMsg').textContent = '正在上传并解析数据，大文件需要 1-3 分钟...';
+
+  try {
+    const resp = await fetch('/data-import/api/upload', { method: 'POST', body: fd });
+    const data = await resp.json();
+
+    document.getElementById('parseProgress').style.display = 'none';
+    document.getElementById('btnParse').disabled = false;
+
+    if (data.status !== 'success') {
+      showToast('解析失败：' + data.message, 'error', 6000);
+      return;
+    }
+
+    sid = data.sample_id || true;   // 仅用于前端开关；任意 truthy 值即可
+    showStats(data.stats);
+    document.getElementById('cardStats').style.display = 'block';
+    document.getElementById('cardNorm').style.display = 'block';
+    showToast(data.message, 'success');
+
+  } catch (e) {
+    document.getElementById('parseProgress').style.display = 'none';
+    document.getElementById('btnParse').disabled = false;
+    showToast('请求失败：' + e.message, 'error');
+  }
+});
+
+// ─── 显示统计 ───
+function showStats(stats) {
+  const chips = [
+    { val: stats.n_pixels.toLocaleString(), lbl: '像素数' },
+    { val: stats.n_mz.toLocaleString(), lbl: 'm/z 通道数' },
+    { val: `${stats.x_range[0].toFixed(0)}–${stats.x_range[1].toFixed(0)}`, lbl: 'X 范围（像素）' },
+    { val: `${stats.y_range[0].toFixed(0)}–${stats.y_range[1].toFixed(0)}`, lbl: 'Y 范围（像素）' },
+    { val: stats.total_intensity_mean.toExponential(2), lbl: 'TIC 均值' },
+    { val: (stats.sparsity * 100).toFixed(1) + '%', lbl: '稀疏度' },
+  ];
+  document.getElementById('statsRow').innerHTML = chips.map(c =>
+    `<div class="metric-chip"><div class="val">${c.val}</div><div class="lbl">${c.lbl}</div></div>`
+  ).join('');
+}
+
+// ─── 执行归一化 ───
+document.getElementById('btnNorm').addEventListener('click', async () => {
+  if (!sid) { showToast('请先解析数据', 'error'); return; }
+
+  const method = document.querySelector('input[name="normMethod"]:checked').value;
+
+  document.getElementById('btnNorm').disabled = true;
+  document.getElementById('normProgress').style.display = 'block';
+
+  try {
+    const resp = await fetch('/data-import/api/normalize', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ method }),
+    });
+    const data = await resp.json();
+
+    document.getElementById('normProgress').style.display = 'none';
+    document.getElementById('btnNorm').disabled = false;
+
+    if (data.status !== 'success') {
+      showToast('归一化失败：' + data.message, 'error', 6000);
+      return;
+    }
+
+    // 展示结果
+    document.getElementById('normResultTitle').textContent = `${method} 归一化结果`;
+    document.getElementById('histImg').src = 'data:image/png;base64,' + data.hist_img;
+    document.getElementById('normSaveMsg').textContent =
+      `✓ 归一化数据已保存，后续模块（聚类、NMF 等）将自动使用 ${method} 归一化结果`;
+
+    const s = data.stats;
+    document.getElementById('normStatsRow').innerHTML = [
+      { val: s.n_pixels.toLocaleString(), lbl: '像素数' },
+      { val: s.total_intensity_mean.toExponential(2), lbl: '归一化后均值' },
+      { val: (s.total_intensity_std / s.total_intensity_mean * 100).toFixed(1) + '%', lbl: 'CV（像素间）' },
+    ].map(c => `<div class="metric-chip"><div class="val">${c.val}</div><div class="lbl">${c.lbl}</div></div>`).join('');
+
+    document.getElementById('normResult').style.display = 'block';
+    showToast(data.message, 'success');
+    document.getElementById('normResult').scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+  } catch (e) {
+    document.getElementById('normProgress').style.display = 'none';
+    document.getElementById('btnNorm').disabled = false;
+    showToast('请求失败：' + e.message, 'error');
+  }
+});
+</script>
+{% endblock %}

@@ -1,0 +1,1345 @@
+{% extends "base.html" %}
+{% block title %}ROI 标注{% endblock %}
+
+{% block head %}
+<style>
+/* ── ROI 专用样式 ── */
+.roi-setup-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+.roi-setup-grid .card { margin: 0; }
+
+.card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1.2rem 1.4rem;
+  margin-bottom: 0.8rem;
+}
+.card-title {
+  font-weight: 600;
+  font-size: 0.88rem;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 0.9rem;
+}
+
+/* ── canvas 绘制区 ── */
+.canvas-area {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  position: relative;
+  min-height: 420px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: crosshair;
+}
+.canvas-area canvas {
+  display: block;
+  max-width: 100%;
+  max-height: 60vh;
+}
+#canvasPlaceholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.6rem;
+  color: var(--text-muted);
+  font-size: 0.88rem;
+  pointer-events: none;
+}
+#canvasPlaceholder .ph-icon { font-size: 2.5rem; }
+
+/* ── ROI 工具栏 ── */
+.roi-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  padding: 0.6rem 1rem;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  margin-bottom: 0.6rem;
+}
+.roi-toolbar .divider { width: 1px; height: 20px; background: var(--border); }
+.mode-btn {
+  font-size: 0.8rem;
+  padding: 0.3rem 0.8rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.mode-btn:hover { color: var(--text); border-color: var(--text-muted); }
+.mode-btn.active {
+  background: var(--accent-dim);
+  border-color: var(--accent-border);
+  color: var(--accent);
+}
+.color-dot {
+  display: inline-block;
+  width: 10px; height: 10px;
+  border-radius: 50%;
+  margin-right: 4px;
+  vertical-align: middle;
+}
+
+/* ── ROI 区域列表 ── */
+.roi-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  max-height: 220px;
+  overflow-y: auto;
+}
+.roi-item {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.5rem 0.8rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 0.82rem;
+  transition: border-color 0.15s;
+}
+.roi-item.active-drawing { border-color: var(--accent); }
+.roi-item .roi-dot {
+  width: 12px; height: 12px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.roi-item .roi-label { flex: 1; font-weight: 500; color: var(--text); }
+.roi-item .roi-count { color: var(--text-muted); font-family: var(--mono); font-size: 0.75rem; }
+.roi-item .roi-del {
+  background: none; border: none;
+  color: var(--text-muted); cursor: pointer;
+  padding: 0 0.3rem; font-size: 0.9rem; opacity: 0;
+  transition: opacity 0.15s;
+}
+.roi-item:hover .roi-del { opacity: 1; }
+.roi-item .roi-del:hover { color: var(--danger); }
+
+.roi-empty {
+  text-align: center;
+  padding: 1.2rem;
+  color: var(--text-muted);
+  font-size: 0.82rem;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+}
+
+/* ── 结果区 ── */
+.result-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 0.6rem;
+}
+.result-card {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 0.8rem 1rem;
+  text-align: center;
+}
+.result-card .rc-name {
+  font-size: 0.82rem; font-weight: 600;
+  color: var(--text); margin-bottom: 0.3rem;
+}
+.result-card .rc-count {
+  font-family: var(--mono); font-size: 1.2rem;
+  color: var(--accent); font-weight: 600;
+}
+.result-card .rc-sub { font-size: 0.72rem; color: var(--text-muted); }
+.result-card .btn-dl {
+  margin-top: 0.5rem; width: 100%;
+  font-size: 0.75rem; padding: 0.3rem 0;
+}
+
+/* ── 步骤指示器 ── */
+.step-bar {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  margin-bottom: 1.2rem;
+}
+.step-node {
+  display: flex; align-items: center; gap: 0.5rem;
+  padding: 0.4rem 0.8rem;
+  border-radius: var(--radius-sm);
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  cursor: default;
+}
+.step-node.active { color: var(--accent); background: var(--accent-dim); }
+.step-node.done { color: var(--success); }
+.step-node .sn { width: 22px; height: 22px; border-radius: 50%; border: 1.5px solid currentColor;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 0.7rem; font-family: var(--mono); flex-shrink: 0; }
+.step-node.done .sn::after { content: '✓'; }
+.step-connector { width: 30px; height: 1px; background: var(--border); flex-shrink: 0; }
+
+/* ── 输入框 ── */
+.input-row { display: flex; gap: 0.6rem; align-items: center; margin-bottom: 0.6rem; }
+.input-row label { font-size: 0.8rem; color: var(--text-dim); min-width: 90px; flex-shrink: 0; }
+.input-field {
+  flex: 1; background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text); font-family: var(--mono);
+  font-size: 0.82rem; padding: 0.4rem 0.7rem;
+}
+.input-field:focus { outline: none; border-color: var(--accent-border); }
+.hint-text { font-size: 0.75rem; color: var(--text-muted); margin-top: 0.3rem; }
+
+.status-chip {
+  display: inline-flex; align-items: center; gap: 0.4rem;
+  font-size: 0.78rem; padding: 0.25rem 0.7rem;
+  border-radius: 999px; border: 1px solid;
+}
+.status-chip.ok  { border-color: rgba(52,211,153,0.4); color: var(--success); background: rgba(52,211,153,0.08); }
+.status-chip.bad { border-color: rgba(248,113,113,0.4); color: var(--danger);  background: rgba(248,113,113,0.08); }
+.status-chip.warn{ border-color: rgba(245,158,11,0.4);  color: var(--warn);    background: rgba(245,158,11,0.08); }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h2>ROI 标注与区域提取</h2>
+  <p class="page-desc">在 HE 原图上圈选 ROI；后端会自动按配准矩阵（可选 TPS）把多边形映射到 MSI 像素。<br>
+     标注分两层：先定义组织外轮廓 → 再在组织内画癌区；组织内剩余像素自动归为癌旁。</p>
+</div>
+
+<!-- ── 步骤指示器 ── -->
+<div class="step-bar">
+  <div class="step-node active" id="stepNode1"><div class="sn">1</div>加载图像</div>
+  <div class="step-connector"></div>
+  <div class="step-node" id="stepNode2"><div class="sn">2</div>绘制 ROI</div>
+  <div class="step-connector"></div>
+  <div class="step-node" id="stepNode3"><div class="sn">3</div>提取 & 导出</div>
+</div>
+
+<!-- ════════════ 第1步：配置与加载 ════════════ -->
+<div id="step1Panel">
+
+  <!-- Session 状态 -->
+  <div class="card" style="margin-bottom:0.8rem;">
+    <div class="card-title">当前 Session 状态</div>
+    <div id="sessionStatusArea" style="display:flex; gap:0.6rem; flex-wrap:wrap;">
+      <span class="status-chip warn">检测中…</span>
+    </div>
+  </div>
+
+  <div class="roi-setup-grid">
+    <!-- 上传 HE 原图 -->
+    <div class="card">
+      <div class="card-title">HE 原图</div>
+      <p class="hint-text" style="margin-bottom:0.8rem;">
+        ROI 绘制用 HE 原图。配准矩阵已自动从模块5/6 加载，会在后端把多边形映射到 MSI 像素。
+      </p>
+      <label class="upload-card" style="padding:1.5rem; cursor:pointer;" id="imgUploadCard">
+        <input type="file" id="imgFileInput" accept=".png,.jpg,.jpeg,.tif,.tiff"
+               style="display:none">
+        <div class="upload-icon" style="font-size:1.8rem;">🖼️</div>
+        <div class="upload-title" style="font-size:0.85rem;">点击上传图像</div>
+        <div class="upload-hint">PNG / JPG / TIF</div>
+        <div class="upload-status" id="imgUploadStatus" style="display:none;"></div>
+      </label>
+    </div>
+
+    <!-- 上传配准矩阵 -->
+    <div class="card">
+      <div class="card-title">配准矩阵（可选）</div>
+      <p class="hint-text" style="margin-bottom:0.8rem;">
+        上传 <code>rigid_result.json</code>（来自刚性配准步骤）以正确映射坐标。<br>
+        若不上传，将直接以图像坐标作为 MSI 坐标。
+      </p>
+      <label class="upload-card" style="padding:1.5rem; cursor:pointer;" id="jsonUploadCard">
+        <input type="file" id="jsonFileInput" accept=".json" style="display:none">
+        <div class="upload-icon" style="font-size:1.8rem;">📐</div>
+        <div class="upload-title" style="font-size:0.85rem;">上传 rigid_result.json</div>
+        <div class="upload-hint">可选 · 提升坐标精度</div>
+        <div class="upload-status" id="jsonUploadStatus" style="display:none;"></div>
+      </label>
+    </div>
+  </div>
+
+  <div class="panel-actions" style="margin-top:0.5rem;">
+    <button class="btn btn-primary" id="btnGoStep2" disabled>下一步：绘制 ROI ▶</button>
+  </div>
+</div>
+
+<!-- ════════════ 第2步：绘制 ROI ════════════ -->
+<div id="step2Panel" style="display:none;">
+
+  <!-- 顶部：单/多组织模式开关 + 组织管理 -->
+  <div class="card" style="margin-bottom:0.8rem;">
+    <div style="display:flex; align-items:center; gap:0.8rem; flex-wrap:wrap;">
+      <label style="display:flex; align-items:center; gap:0.4rem; font-size:0.85rem; cursor:pointer;">
+        <input type="checkbox" id="chkSingleTissue" checked>
+        本切片只有单个组织（无需细分）
+      </label>
+      <span style="flex:1;"></span>
+      <span id="tissueModeHint" style="font-size:0.78rem; color:var(--text-muted);">
+        单组织模式：所有多边形归到一个组织名下
+      </span>
+    </div>
+
+    <div id="tissueManagerArea" style="margin-top:0.8rem;">
+      <!-- 由 JS 渲染：单组织模式只显示一个名称输入；多组织模式显示组织列表 -->
+    </div>
+  </div>
+
+  <div style="display:grid; grid-template-columns: 1fr 320px; gap:1rem;">
+    <!-- 左：画布 -->
+    <div>
+      <!-- 绘制模式工具栏 -->
+      <div class="roi-toolbar">
+        <span style="font-size:0.8rem; color:var(--text-dim);">绘制目标：</span>
+        <button class="mode-btn" id="btnTargetCancer">
+          <span class="color-dot" style="background:#f87171;"></span>癌区
+        </button>
+        <button class="mode-btn active" id="btnTargetBoundary">
+          <span class="color-dot" style="background:#fbbf24;"></span>组织外轮廓
+        </button>
+        <div class="divider"></div>
+        <span style="font-size:0.78rem; color:var(--text-dim);">当前组织：</span>
+        <span id="currentTissueLabel" style="font-size:0.82rem; color:var(--accent);">—</span>
+        <div class="divider"></div>
+        <button class="btn btn-small btn-ghost" id="btnUndoPt">↩ 撤点</button>
+        <button class="btn btn-small btn-ghost" id="btnFinishPoly">✔ 完成多边形</button>
+        <button class="btn btn-small btn-ghost" id="btnClearActive" style="color:var(--danger);">✕ 清空进行中</button>
+      </div>
+
+      <!-- canvas 区域 -->
+      <div class="canvas-area" id="canvasArea">
+        <div id="canvasPlaceholder">
+          <div class="ph-icon">🗺️</div>
+          <div>正在加载图像…</div>
+        </div>
+        <canvas id="roiCanvas" style="display:none;"></canvas>
+      </div>
+      <p class="hint-text" style="margin-top:0.4rem;">
+        💡 先画组织外轮廓，再画一个或多个癌区；提取时癌区外、组织内的像素会自动作为癌旁
+      </p>
+    </div>
+
+    <!-- 右：当前组织内已画的子区域 -->
+    <div>
+      <div class="card" style="height:100%; box-sizing:border-box;">
+        <div class="card-title">已绘制 ROI</div>
+        <div id="subRoiPanel">
+          <!-- 由 JS 渲染：当前组织的 sub_rois + boundary 列表 -->
+        </div>
+        <div style="margin-top:0.8rem; padding-top:0.8rem; border-top:1px solid var(--border);">
+          <button class="btn btn-ghost btn-small" id="btnClearTissue" style="width:100%; color:var(--danger);">
+            ✕ 清空当前组织所有 ROI
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel-actions">
+    <button class="btn btn-secondary" id="btnBackStep1">◀ 返回</button>
+    <button class="btn btn-primary" id="btnGoStep3" disabled>下一步：提取数据 ▶</button>
+  </div>
+</div>
+
+<!-- ════════════ 第3步：提取 & 导出 ════════════ -->
+<div id="step3Panel" style="display:none;">
+
+  <div class="card">
+    <div class="card-title">提取参数</div>
+    <div class="param-grid" style="display:grid; grid-template-columns:repeat(4,1fr); gap:1rem;">
+      <div>
+        <label style="font-size:0.8rem; color:var(--text-dim); display:block; margin-bottom:0.4rem;">
+          配准基础
+        </label>
+        <select class="input-field" id="useTps" style="width:100%;">
+          <option value="false">仅刚性配准（affine）</option>
+          <option value="true" id="useTpsOptYes" disabled>基于 TPS 精配准</option>
+        </select>
+        <div id="useTpsHint" style="font-size:0.7rem; color:var(--text-dim); margin-top:0.3rem;">
+          检测中...
+        </div>
+      </div>
+      <div>
+        <label style="font-size:0.8rem; color:var(--text-dim); display:block; margin-bottom:0.4rem;">
+          Pseudo-bulk 聚合方式
+        </label>
+        <select class="input-field" id="pbMethod" style="width:100%;">
+          <option value="mean" selected>均值（mean，推荐）</option>
+          <option value="median">中位数（median）</option>
+        </select>
+      </div>
+      <div>
+        <label style="font-size:0.8rem; color:var(--text-dim); display:block; margin-bottom:0.4rem;">
+          是否合并代谢物注释
+        </label>
+        <select class="input-field" id="useAnnotation" style="width:100%;">
+          <option value="true">是（列名含代谢物名称）</option>
+          <option value="false">否（仅 m/z 值）</option>
+        </select>
+      </div>
+      <div style="display:flex; align-items:flex-end;">
+        <div>
+          <div style="font-size:0.8rem; color:var(--text-dim); margin-bottom:0.4rem;">ROI 区域数量</div>
+          <div style="font-family:var(--mono); font-size:1.3rem; color:var(--accent);"
+               id="roiCountDisplay">0</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ROI 区域摘要 -->
+  <div class="card" id="roiSummaryCard">
+    <div class="card-title">已定义 ROI 区域摘要</div>
+    <div id="roiSummaryList"></div>
+  </div>
+
+  <div class="panel-actions">
+    <button class="btn btn-secondary" id="btnBackStep2">◀ 返回绘制</button>
+    <button class="btn btn-primary" id="btnExtract">▶ 开始提取</button>
+  </div>
+
+  <!-- 进度条 -->
+  <div id="extractProgress" style="display:none; margin-top:1rem;">
+    <div class="progress-bar"><div class="progress-fill"></div></div>
+    <div class="progress-text">正在提取 MSI 像素数据，请稍候…</div>
+  </div>
+
+  <!-- 结果区 -->
+  <div id="extractResult" style="display:none; margin-top:1rem;">
+    <div class="card">
+      <div class="card-title">提取结果</div>
+      <div class="result-grid" id="resultGrid"></div>
+    </div>
+
+    <div class="card" style="margin-top:0.8rem;">
+      <div class="card-title">预览图</div>
+      <img id="previewImg" src="" alt="ROI 预览" style="max-width:100%; border-radius:6px;">
+    </div>
+
+    <div class="card" style="margin-top:0.8rem;">
+      <div class="card-title">下载全部结果</div>
+      <div style="display:flex; gap:0.8rem; flex-wrap:wrap;">
+        <a class="btn btn-primary" id="btnDlPseudobulk" href="#" download
+           style="text-decoration:none;">
+          ↓ Pseudo-bulk 汇总 CSV
+        </a>
+        <span style="font-size:0.8rem; color:var(--text-muted); align-self:center;">
+          各区域像素级强度请在上方各卡片单独下载
+        </span>
+      </div>
+      <p class="hint-text" style="margin-top:0.6rem;">
+        Pseudo-bulk CSV 可直接送入「差异代谢物分析」模块（模块8）
+      </p>
+    </div>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+// ════════════════════════════════════════════════════════
+// ROI 标注模块 · 前端逻辑（两层模型：组织外轮廓 → 癌区；癌旁自动生成）
+// ════════════════════════════════════════════════════════
+
+// ── 多组织调色板（与后端 plot_roi_preview 保持一致）──
+const TISSUE_PALETTES = [
+  { cancer: '#f87171', paracancer: '#34d399', boundary: '#fbbf24' },  // 组织 A：红/绿/黄
+  { cancer: '#a78bfa', paracancer: '#60a5fa', boundary: '#c084fc' },  // 组织 B：紫/蓝
+  { cancer: '#fb923c', paracancer: '#22d3ee', boundary: '#84cc16' },  // 组织 C：橙/青
+];
+function tissuePalette(tIdx) { return TISSUE_PALETTES[tIdx % TISSUE_PALETTES.length]; }
+function colorFor(tIdx, target) { return tissuePalette(tIdx)[target]; }
+
+// ── 状态 ──
+let imgNaturalW = 0, imgNaturalH = 0;
+let imageLoaded  = false;
+let regLoaded    = false;          // 配准矩阵已加载（可选）
+
+// 两层模型
+// tissueRegions = [{
+//   id, name,
+//   boundaries: [[[x,y],...], ...],         // 多个外轮廓多边形
+//   subROIs: [{id, name, type:'cancer', polygons: [[[x,y],...]]}, ...],
+// }]
+let tissueRegions   = [];
+let currentTissueId = null;        // 当前编辑的组织 id
+let drawingTarget   = 'boundary';  // 'cancer' | 'boundary'
+let activePoints    = [];          // 当前正在画的多边形顶点
+let singleTissueMode = true;       // 默认单组织
+
+let bgImage = null;
+let _idCounter = 1;
+function _newId(prefix) { return prefix + '_' + (_idCounter++); }
+
+// ── Canvas ──
+const canvas  = document.getElementById('roiCanvas');
+const ctx     = canvas.getContext('2d');
+
+// ────────────────────────────────────────────────────────
+// 步骤控制
+// ────────────────────────────────────────────────────────
+function setStep(n) {
+  document.getElementById('step1Panel').style.display = n === 1 ? '' : 'none';
+  document.getElementById('step2Panel').style.display = n === 2 ? '' : 'none';
+  document.getElementById('step3Panel').style.display = n === 3 ? '' : 'none';
+  ['stepNode1','stepNode2','stepNode3'].forEach((id, i) => {
+    const el = document.getElementById(id);
+    el.classList.remove('active','done');
+    if (i + 1 === n) el.classList.add('active');
+    else if (i + 1 < n) el.classList.add('done');
+  });
+}
+
+// ────────────────────────────────────────────────────────
+// Session 信息检测
+// ────────────────────────────────────────────────────────
+async function checkSessionInfo() {
+  try {
+    const resp = await fetch('/roi/api/session_info');
+    const data = await resp.json();
+    const info = data.info;
+    const area = document.getElementById('sessionStatusArea');
+
+    const chips = [
+      { ok: info.has_msi_data,     label: info.msi_filename || 'MSI 数据',  text: 'MSI 数据' },
+      { ok: info.has_annotation,   label: '代谢物注释',                     text: '注释' },
+      { ok: info.has_registration, label: '配准矩阵',                       text: '配准矩阵' },
+    ];
+
+    area.innerHTML = chips.map(c =>
+      `<span class="status-chip ${c.ok ? 'ok' : 'warn'}">
+        ${c.ok ? '✓' : '○'} ${c.text}${c.ok ? '' : '（未加载）'}
+       </span>`
+    ).join('');
+
+    // 若 session 中已有配准叠加图，自动加载
+    if (info.overlay_img) {
+      loadImageFromBase64(info.overlay_img, info.img_w, info.img_h);
+      document.getElementById('imgUploadStatus').textContent = '已从配准结果加载';
+      document.getElementById('imgUploadStatus').style.display = 'block';
+      document.getElementById('imgUploadCard').classList.add('has-file');
+    }
+    if (info.has_registration) {
+      regLoaded = true;
+      document.getElementById('jsonUploadStatus').textContent = '已从 session 加载配准矩阵';
+      document.getElementById('jsonUploadStatus').style.display = 'block';
+      document.getElementById('jsonUploadCard').classList.add('has-file');
+    }
+
+    // ── TPS 选项可用性：仅在 rigid_result.json 中存在 >=3 对控制点时启用 ──
+    const tpsOpt = document.getElementById('useTpsOptYes');
+    const tpsSel = document.getElementById('useTps');
+    const tpsHint = document.getElementById('useTpsHint');
+    if (info.has_tps) {
+      tpsOpt.disabled = false;
+      tpsSel.value = 'true';                 // 推荐默认走 TPS
+      tpsHint.textContent = '已检测到 TPS 控制点，可选用 TPS 精修结果';
+      tpsHint.style.color = 'var(--success, #4caf50)';
+    } else {
+      tpsOpt.disabled = true;
+      tpsSel.value = 'false';
+      tpsHint.textContent = '未检测到 TPS 控制点（请先在「TPS 精配准」模块完成 ≥3 对控制点）';
+      tpsHint.style.color = '';
+    }
+  } catch (e) {
+    console.error('session_info 获取失败:', e);
+  }
+}
+
+// ────────────────────────────────────────────────────────
+// 图像加载
+// ────────────────────────────────────────────────────────
+function loadImageFromBase64(b64, w, h) {
+  const img = new Image();
+  img.onload = () => {
+    bgImage      = img;
+    imgNaturalW  = w || img.naturalWidth;
+    imgNaturalH  = h || img.naturalHeight;
+    imageLoaded  = true;
+    document.getElementById('btnGoStep2').disabled = false;
+    initCanvas();
+  };
+  img.src = b64;
+}
+
+function initCanvas() {
+  if (!imageLoaded || !bgImage) return;
+  const area      = document.getElementById('canvasArea');
+  const maxW      = area.clientWidth  - 2;
+  const maxH      = Math.min(window.innerHeight * 0.6, 600);
+  const scale     = Math.min(maxW / imgNaturalW, maxH / imgNaturalH, 1);
+
+  canvas.width    = Math.round(imgNaturalW * scale);
+  canvas.height   = Math.round(imgNaturalH * scale);
+  canvas.style.display = 'block';
+  document.getElementById('canvasPlaceholder').style.display = 'none';
+
+  renderCanvas();
+}
+
+// ────────────────────────────────────────────────────────
+// Canvas 渲染
+// ────────────────────────────────────────────────────────
+function canvasToImg(cx, cy) {
+  // 画布坐标 → 原图坐标
+  const sx = imgNaturalW / canvas.width;
+  const sy = imgNaturalH / canvas.height;
+  return [cx * sx, cy * sy];
+}
+function imgToCanvas(ix, iy) {
+  // 原图坐标 → 画布坐标
+  const sx = canvas.width  / imgNaturalW;
+  const sy = canvas.height / imgNaturalH;
+  return [ix * sx, iy * sy];
+}
+
+function _drawPolygon(poly, color, opts = {}) {
+  if (!poly || poly.length < 2) return;
+  const pts = poly.map(([ix, iy]) => imgToCanvas(ix, iy));
+  ctx.beginPath();
+  ctx.moveTo(pts[0][0], pts[0][1]);
+  pts.slice(1).forEach(([x, y]) => ctx.lineTo(x, y));
+  if (opts.close !== false) ctx.closePath();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = opts.lineWidth || 1.5;
+  ctx.setLineDash(opts.dash || []);
+  ctx.stroke();
+  if (opts.fill) {
+    ctx.fillStyle = color + '33';
+    ctx.fill();
+  }
+  ctx.setLineDash([]);
+}
+
+function renderCanvas() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  if (bgImage) ctx.drawImage(bgImage, 0, 0, canvas.width, canvas.height);
+
+  // 1) 所有组织的所有已完成多边形（当前组织高亮，其他组织淡显）
+  tissueRegions.forEach((tissue, tIdx) => {
+    const isCurrent = tissue.id === currentTissueId;
+    const palette = tissuePalette(tIdx);
+    const lw = isCurrent ? 2 : 1;
+    const opacityHex = isCurrent ? '' : '55';   // 非当前组织透明度降低
+
+    // 外轮廓
+    (tissue.boundaries || []).forEach(p => {
+      _drawPolygon(p, palette.boundary + opacityHex, {
+        lineWidth: lw, fill: isCurrent, dash: [8, 4],
+      });
+    });
+    // sub_rois
+    (tissue.subROIs || []).forEach(sub => {
+      const c = palette[sub.type] + opacityHex;
+      sub.polygons.forEach(p => _drawPolygon(p, c, { lineWidth: lw, fill: isCurrent }));
+    });
+  });
+
+  // 2) 正在画的多边形（虚线 + 顶点）
+  if (activePoints.length >= 1 && currentTissueId) {
+    const tIdx = tissueRegions.findIndex(t => t.id === currentTissueId);
+    const c = colorFor(tIdx >= 0 ? tIdx : 0, drawingTarget);
+    const cpts = activePoints.map(([ix, iy]) => imgToCanvas(ix, iy));
+    ctx.beginPath();
+    ctx.moveTo(cpts[0][0], cpts[0][1]);
+    cpts.slice(1).forEach(([x, y]) => ctx.lineTo(x, y));
+    ctx.strokeStyle = c;
+    ctx.lineWidth = 2;
+    ctx.setLineDash([6, 4]);
+    ctx.stroke();
+    cpts.forEach(([x, y]) => {
+      ctx.beginPath();
+      ctx.arc(x, y, 4, 0, Math.PI * 2);
+      ctx.fillStyle = c;
+      ctx.fill();
+    });
+    ctx.setLineDash([]);
+  }
+}
+
+// ────────────────────────────────────────────────────────
+// Canvas 鼠标事件
+// ────────────────────────────────────────────────────────
+canvas.addEventListener('click', e => {
+  if (!currentTissueId) {
+    showToast(singleTissueMode ? '请先填写组织名称' : '请先选择当前编辑的组织', 'warn');
+    return;
+  }
+  const rect = canvas.getBoundingClientRect();
+  const [ix, iy] = canvasToImg(e.clientX - rect.left, e.clientY - rect.top);
+  activePoints.push([ix, iy]);
+  renderCanvas();
+});
+
+canvas.addEventListener('dblclick', () => {
+  if (activePoints.length >= 3) finishCurrentPolygon();
+});
+
+canvas.addEventListener('mousemove', e => {
+  if (!currentTissueId || activePoints.length === 0) return;
+  const rect = canvas.getBoundingClientRect();
+  const cx = e.clientX - rect.left, cy = e.clientY - rect.top;
+  renderCanvas();
+  const tIdx = tissueRegions.findIndex(t => t.id === currentTissueId);
+  const c = colorFor(tIdx >= 0 ? tIdx : 0, drawingTarget);
+  const lastPt = activePoints[activePoints.length - 1];
+  const [lx, ly] = imgToCanvas(lastPt[0], lastPt[1]);
+  ctx.beginPath();
+  ctx.moveTo(lx, ly); ctx.lineTo(cx, cy);
+  ctx.strokeStyle = c + 'aa'; ctx.lineWidth = 1.5; ctx.setLineDash([4, 3]);
+  ctx.stroke(); ctx.setLineDash([]);
+});
+
+// ────────────────────────────────────────────────────────
+// 组织管理（单/多模式）
+// ────────────────────────────────────────────────────────
+function getCurrentTissue() {
+  return tissueRegions.find(t => t.id === currentTissueId) || null;
+}
+
+function ensureSingleTissueExists() {
+  // 单组织模式下确保有且仅有一个组织
+  if (tissueRegions.length === 0) {
+    const t = { id: _newId('tissue'), name: '', boundaries: [], subROIs: [] };
+    tissueRegions.push(t);
+    currentTissueId = t.id;
+  } else if (tissueRegions.length > 1) {
+    // 切回单组织模式时合并所有组织到第一个
+    const first = tissueRegions[0];
+    for (let i = 1; i < tissueRegions.length; i++) {
+      first.boundaries.push(...tissueRegions[i].boundaries);
+      first.subROIs.push(...tissueRegions[i].subROIs);
+    }
+    tissueRegions = [first];
+    currentTissueId = first.id;
+  } else {
+    currentTissueId = tissueRegions[0].id;
+  }
+}
+
+function renderTissueManager() {
+  const area = document.getElementById('tissueManagerArea');
+  if (singleTissueMode) {
+    ensureSingleTissueExists();
+    const t = tissueRegions[0];
+    area.innerHTML = `
+      <div class="input-row">
+        <label>组织名称</label>
+        <input class="input-field" id="singleTissueName"
+               placeholder="给整个切片起个组织名（必填）"
+               value="${escapeHtml(t.name)}" style="flex:1;">
+      </div>
+    `;
+    document.getElementById('singleTissueName').addEventListener('input', e => {
+      t.name = e.target.value;
+      updateCurrentTissueLabel();
+      updateGoStep3Enabled();
+    });
+  } else {
+    area.innerHTML = `
+      <div style="display:flex; gap:0.6rem; align-items:flex-end; margin-bottom:0.6rem;">
+        <div style="flex:1;">
+          <label style="font-size:0.78rem; color:var(--text-dim); display:block; margin-bottom:0.3rem;">
+            当前编辑组织
+          </label>
+          <select class="input-field" id="tissueSelect" style="width:100%;"></select>
+        </div>
+        <button class="btn btn-secondary btn-small" id="btnAddTissue">+ 新建组织</button>
+        <button class="btn btn-ghost btn-small" id="btnDeleteTissue" style="color:var(--danger);">删除</button>
+      </div>
+      <div class="input-row" id="tissueRenameRow" style="display:none;">
+        <label>组织名称</label>
+        <input class="input-field" id="tissueRenameInput" style="flex:1;">
+      </div>
+    `;
+    const sel = document.getElementById('tissueSelect');
+    sel.innerHTML = tissueRegions.map(t =>
+      `<option value="${t.id}" ${t.id === currentTissueId ? 'selected' : ''}>${escapeHtml(t.name || '(未命名)')}</option>`
+    ).join('') || '<option value="">(还没有组织)</option>';
+    sel.addEventListener('change', () => {
+      currentTissueId = sel.value;
+      activePoints = [];
+      refreshAll();
+    });
+    document.getElementById('btnAddTissue').addEventListener('click', addTissue);
+    document.getElementById('btnDeleteTissue').addEventListener('click', deleteCurrentTissue);
+
+    // 行内重命名
+    if (currentTissueId) {
+      const cur = getCurrentTissue();
+      const renameRow = document.getElementById('tissueRenameRow');
+      const renameInput = document.getElementById('tissueRenameInput');
+      renameRow.style.display = 'flex';
+      renameInput.value = cur.name;
+      renameInput.placeholder = '组织名（必填）';
+      renameInput.addEventListener('input', e => {
+        cur.name = e.target.value;
+        sel.options[sel.selectedIndex].text = cur.name || '(未命名)';
+        updateCurrentTissueLabel();
+        updateGoStep3Enabled();
+      });
+    }
+  }
+  updateCurrentTissueLabel();
+}
+
+function addTissue() {
+  const t = { id: _newId('tissue'), name: `组织 ${tissueRegions.length + 1}`, boundaries: [], subROIs: [] };
+  tissueRegions.push(t);
+  currentTissueId = t.id;
+  activePoints = [];
+  refreshAll();
+}
+
+function deleteCurrentTissue() {
+  if (!currentTissueId || tissueRegions.length === 0) return;
+  if (!confirm('确定删除当前组织及其所有 ROI？')) return;
+  tissueRegions = tissueRegions.filter(t => t.id !== currentTissueId);
+  currentTissueId = tissueRegions[0]?.id || null;
+  activePoints = [];
+  refreshAll();
+}
+
+function updateCurrentTissueLabel() {
+  const cur = getCurrentTissue();
+  const el = document.getElementById('currentTissueLabel');
+  if (cur && cur.name) {
+    el.textContent = cur.name;
+    el.style.color = 'var(--accent)';
+  } else if (cur) {
+    el.textContent = '(未命名)';
+    el.style.color = 'var(--warn)';
+  } else {
+    el.textContent = '—';
+    el.style.color = 'var(--warn)';
+  }
+}
+
+// ── 单/多模式切换 ──
+document.getElementById('chkSingleTissue').addEventListener('change', e => {
+  singleTissueMode = e.target.checked;
+  document.getElementById('tissueModeHint').textContent = singleTissueMode
+    ? '单组织模式：所有多边形归到一个组织名下'
+    : '多组织模式：可分别为不同组织区域命名；每个组织内剩余像素自动作为癌旁';
+  if (singleTissueMode) ensureSingleTissueExists();
+  activePoints = [];
+  refreshAll();
+});
+
+// ────────────────────────────────────────────────────────
+// 子区域（癌/癌旁/外轮廓）管理
+// ────────────────────────────────────────────────────────
+function autoSubName(type, tissue) {
+  const prefix = type === 'cancer' ? '癌区' : '区域';
+  const existing = (tissue.subROIs || []).filter(s => s.type === type).length;
+  return `${prefix}${existing + 1}`;
+}
+
+function finishCurrentPolygon() {
+  if (activePoints.length < 3) {
+    showToast('多边形至少需要 3 个顶点', 'warn');
+    return;
+  }
+  const tissue = getCurrentTissue();
+  if (!tissue) { showToast('请先创建/选择组织', 'warn'); return; }
+
+  if (drawingTarget === 'boundary') {
+    tissue.boundaries.push([...activePoints]);
+  } else {
+    // 找到该组织里同类型的最后一个 sub_roi 复用，否则新建
+    let sub = (tissue.subROIs || []).filter(s => s.type === drawingTarget).slice(-1)[0];
+    if (!sub) {
+      sub = { id: _newId('sub'), name: autoSubName(drawingTarget, tissue), type: drawingTarget, polygons: [] };
+      tissue.subROIs.push(sub);
+    }
+    sub.polygons.push([...activePoints]);
+  }
+  activePoints = [];
+  refreshAll();
+  showToast('已完成多边形', 'success', 1500);
+}
+
+function newSubROI() {
+  // 用户可主动新建一个独立的子区域（不并入上一个）
+  if (drawingTarget === 'boundary') return;
+  const tissue = getCurrentTissue();
+  if (!tissue) return;
+  const sub = { id: _newId('sub'), name: autoSubName(drawingTarget, tissue), type: drawingTarget, polygons: [] };
+  tissue.subROIs.push(sub);
+  refreshAll();
+}
+
+function renderSubRoiPanel() {
+  const panel = document.getElementById('subRoiPanel');
+  const cur = getCurrentTissue();
+  if (!cur) {
+    panel.innerHTML = '<div class="roi-empty">尚未选择组织</div>';
+    return;
+  }
+
+  const tIdx = tissueRegions.indexOf(cur);
+  const p = tissuePalette(tIdx);
+
+  const boundaryCount = (cur.boundaries || []).length;
+  const cancerSubs = cur.subROIs.filter(s => s.type === 'cancer');
+  const hasBoundary = (cur.boundaries || []).some(p => p.length >= 3);
+
+  function subRow(sub, color) {
+    const total = sub.polygons.reduce((s, p) => s + p.length, 0);
+    return `
+      <div class="roi-item">
+        <div class="roi-dot" style="background:${color};"></div>
+        <input class="input-field" data-sub-rename="${sub.id}" value="${escapeHtml(sub.name)}"
+               style="flex:1; font-size:0.8rem; padding:0.2rem 0.4rem;">
+        <div class="roi-count">${sub.polygons.length} poly · ${total} pts</div>
+        <button class="roi-del" data-sub-del="${sub.id}">✕</button>
+      </div>`;
+  }
+
+  panel.innerHTML = `
+    <div style="font-size:0.75rem; color:var(--text-muted); margin-bottom:0.3rem;">外轮廓</div>
+    <div class="roi-item" style="background:${boundaryCount ? 'var(--bg)' : 'transparent'};">
+      <div class="roi-dot" style="background:${p.boundary};"></div>
+      <div class="roi-label">组织外轮廓</div>
+      <div class="roi-count">${boundaryCount} poly</div>
+      <button class="roi-del" data-del-boundary="1">${boundaryCount ? '✕' : ''}</button>
+    </div>
+
+    <div style="font-size:0.75rem; color:var(--text-muted); margin:0.6rem 0 0.3rem;">
+      癌区
+      <button class="btn btn-ghost btn-small" data-new-sub="cancer" style="float:right; padding:0 0.4rem; font-size:0.7rem;">+ 新建独立癌区</button>
+    </div>
+    ${cancerSubs.length === 0
+      ? '<div class="roi-empty" style="padding:0.6rem;">还没有癌区</div>'
+      : cancerSubs.map(s => subRow(s, p.cancer)).join('')}
+
+    <div style="font-size:0.75rem; color:var(--text-muted); margin:0.6rem 0 0.3rem;">自动癌旁</div>
+    <div class="roi-item">
+      <div class="roi-dot" style="background:${p.paracancer};"></div>
+      <div class="roi-label">组织内非癌区像素</div>
+      <div class="roi-count">${hasBoundary ? '提取时自动生成' : '建议先画组织外轮廓'}</div>
+    </div>
+  `;
+
+  // 绑定事件
+  panel.querySelectorAll('[data-sub-rename]').forEach(inp => {
+    inp.addEventListener('change', e => {
+      const id = e.target.dataset.subRename;
+      const sub = cur.subROIs.find(s => s.id === id);
+      if (sub) sub.name = e.target.value || sub.name;
+      updateGoStep3Enabled();
+    });
+  });
+  panel.querySelectorAll('[data-sub-del]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const id = btn.dataset.subDel;
+      cur.subROIs = cur.subROIs.filter(s => s.id !== id);
+      refreshAll();
+    });
+  });
+  panel.querySelectorAll('[data-new-sub]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      drawingTarget = btn.dataset.newSub;
+      switchTargetUI();
+      newSubROI();
+    });
+  });
+  const delB = panel.querySelector('[data-del-boundary]');
+  if (delB && boundaryCount) {
+    delB.addEventListener('click', () => {
+      if (!confirm('清空当前组织所有外轮廓？')) return;
+      cur.boundaries = [];
+      refreshAll();
+    });
+  }
+}
+
+// ── 绘制目标切换 ──
+function switchTargetUI() {
+  ['btnTargetCancer', 'btnTargetBoundary'].forEach(id => {
+    document.getElementById(id).classList.remove('active');
+  });
+  const map = { cancer: 'btnTargetCancer', boundary: 'btnTargetBoundary' };
+  document.getElementById(map[drawingTarget]).classList.add('active');
+}
+['btnTargetCancer', 'btnTargetBoundary'].forEach(id => {
+  document.getElementById(id).addEventListener('click', () => {
+    drawingTarget = id === 'btnTargetCancer' ? 'cancer'
+                  : 'boundary';
+    activePoints = [];
+    switchTargetUI();
+    renderCanvas();
+  });
+});
+
+// ── 工具栏按钮 ──
+document.getElementById('btnFinishPoly').addEventListener('click', finishCurrentPolygon);
+document.getElementById('btnUndoPt').addEventListener('click', () => {
+  if (activePoints.length > 0) { activePoints.pop(); renderCanvas(); }
+});
+document.getElementById('btnClearActive').addEventListener('click', () => {
+  activePoints = []; renderCanvas();
+});
+document.getElementById('btnClearTissue').addEventListener('click', () => {
+  const cur = getCurrentTissue();
+  if (!cur) return;
+  if (!confirm(`确定清空当前组织「${cur.name || '未命名'}」内的所有 ROI？`)) return;
+  cur.boundaries = []; cur.subROIs = []; activePoints = [];
+  refreshAll();
+});
+
+// ── HTML 转义 ──
+function escapeHtml(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+// ── 综合刷新 ──
+function refreshAll() {
+  renderTissueManager();
+  renderSubRoiPanel();
+  renderCanvas();
+  updateGoStep3Enabled();
+}
+
+function updateGoStep3Enabled() {
+  // 至少要有一个非空组织名 + 至少一条癌区多边形
+  const ok = tissueRegions.some(t =>
+    (t.name && t.name.trim()) &&
+    t.subROIs.some(s => s.type === 'cancer' && s.polygons.some(p => p.length >= 3))
+  );
+  document.getElementById('btnGoStep3').disabled = !ok;
+}
+
+// ────────────────────────────────────────────────────────
+// 文件上传：图像
+// ────────────────────────────────────────────────────────
+document.getElementById('imgFileInput').addEventListener('change', async e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const fd = new FormData();
+  fd.append('image_file', file);
+  try {
+    showToast('正在上传图像…', 'info', 2000);
+    const resp = await fetch('/roi/api/upload_image', { method: 'POST', body: fd });
+    const data = await resp.json();
+    if (data.status !== 'success') { showToast('上传失败：' + data.message, 'error'); return; }
+    loadImageFromBase64(data.img_b64, data.img_w, data.img_h);
+    document.getElementById('imgUploadStatus').textContent = file.name;
+    document.getElementById('imgUploadStatus').style.display = 'block';
+    document.getElementById('imgUploadCard').classList.add('has-file');
+    showToast('图像加载成功', 'success');
+  } catch (err) {
+    showToast('上传请求失败：' + err.message, 'error');
+  }
+});
+
+// ────────────────────────────────────────────────────────
+// 文件上传：配准 JSON
+// ────────────────────────────────────────────────────────
+document.getElementById('jsonFileInput').addEventListener('change', async e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const fd = new FormData();
+  fd.append('reg_json', file);
+  try {
+    const resp = await fetch('/roi/api/upload_reg_json', { method: 'POST', body: fd });
+    const data = await resp.json();
+    if (data.status !== 'success') { showToast('配准矩阵加载失败：' + data.message, 'error'); return; }
+    regLoaded = true;
+    document.getElementById('jsonUploadStatus').textContent = data.message;
+    document.getElementById('jsonUploadStatus').style.display = 'block';
+    document.getElementById('jsonUploadCard').classList.add('has-file');
+    showToast(data.message, 'success');
+  } catch (err) {
+    showToast('上传请求失败：' + err.message, 'error');
+  }
+});
+
+// ────────────────────────────────────────────────────────
+// 步骤导航
+// ────────────────────────────────────────────────────────
+document.getElementById('btnGoStep2').addEventListener('click', () => {
+  if (!imageLoaded) { showToast('请先加载图像', 'warn'); return; }
+  setStep(2);
+  setTimeout(initCanvas, 100);  // 等 DOM 渲染完再初始化 canvas
+});
+
+document.getElementById('btnBackStep1').addEventListener('click', () => setStep(1));
+
+document.getElementById('btnGoStep3').addEventListener('click', () => {
+  // 自动封闭进行中的多边形
+  if (activePoints.length >= 3) {
+    finishCurrentPolygon();
+    showToast('已自动封闭进行中的多边形', 'info', 1500);
+  }
+  // 校验
+  const validTissues = tissueRegions.filter(t =>
+    t.name && t.name.trim() &&
+    t.subROIs.some(s => s.type === 'cancer' && s.polygons.some(p => p.length >= 3))
+  );
+  if (validTissues.length === 0) {
+    showToast('请确保至少一个组织已命名，并画出有效癌区', 'warn'); return;
+  }
+  renderRoiSummary(validTissues);
+  setStep(3);
+});
+
+document.getElementById('btnBackStep2').addEventListener('click', () => {
+  setStep(2);
+  setTimeout(renderCanvas, 50);
+});
+
+// ────────────────────────────────────────────────────────
+// 第3步：ROI 摘要渲染（按 tissue 分组）
+// ────────────────────────────────────────────────────────
+function renderRoiSummary(validTissues) {
+  // ROI 总数 = 癌区 + 自动癌旁
+  const totalSubs = validTissues.reduce((s, t) =>
+    s + t.subROIs.filter(sr => sr.type === 'cancer' && sr.polygons.some(p => p.length >= 3)).length + 1, 0);
+  document.getElementById('roiCountDisplay').textContent = totalSubs;
+
+  const ul = document.getElementById('roiSummaryList');
+  ul.innerHTML = validTissues.map((t, idx) => {
+    const p = tissuePalette(idx);
+    const subRows = t.subROIs.filter(sr => sr.type === 'cancer' && sr.polygons.some(pp => pp.length >= 3))
+      .map(sr => {
+        const c = p[sr.type] || p.cancer;
+        const total = sr.polygons.reduce((s, x) => s + x.length, 0);
+        return `
+          <div style="display:flex; align-items:center; gap:0.5rem; padding:0.25rem 0 0.25rem 1.5rem;">
+            <div style="width:8px;height:8px;border-radius:50%;background:${c};flex-shrink:0;"></div>
+            <span style="font-size:0.82rem;">${escapeHtml(sr.name)}</span>
+            <span style="color:var(--text-muted); font-size:0.72rem;">${sr.type}</span>
+            <span style="flex:1;"></span>
+            <span style="font-family:var(--mono); font-size:0.75rem; color:var(--text-muted);">
+              ${sr.polygons.length} poly · ${total} pts
+            </span>
+          </div>`;
+      }).join('');
+    return `
+      <div style="padding:0.4rem 0; border-bottom:1px solid var(--border);">
+        <div style="display:flex; align-items:center; gap:0.5rem;">
+          <div style="width:12px;height:12px;border-radius:3px;background:${p.cancer};flex-shrink:0;"></div>
+          <strong style="font-size:0.88rem;">${escapeHtml(t.name)}</strong>
+          ${(t.boundaries || []).length > 0 ? `
+            <span style="color:var(--text-muted); font-size:0.72rem;">
+              · 含 ${t.boundaries.length} 外轮廓
+            </span>` : ''}
+        </div>
+        ${subRows}
+        <div style="display:flex; align-items:center; gap:0.5rem; padding:0.25rem 0 0.25rem 1.5rem;">
+          <div style="width:8px;height:8px;border-radius:50%;background:${p.paracancer};flex-shrink:0;"></div>
+          <span style="font-size:0.82rem;">自动癌旁</span>
+          <span style="color:var(--text-muted); font-size:0.72rem;">paracancer</span>
+          <span style="flex:1;"></span>
+          <span style="font-family:var(--mono); font-size:0.75rem; color:var(--text-muted);">组织内非癌区像素</span>
+        </div>
+      </div>`;
+  }).join('');
+}
+
+// ────────────────────────────────────────────────────────
+// 第3步：执行提取
+// ────────────────────────────────────────────────────────
+document.getElementById('btnExtract').addEventListener('click', async () => {
+  // 构建 tissue_regions payload（只含合法 sub_roi，丢掉空多边形）
+  const payload = tissueRegions
+    .filter(t => t.name && t.name.trim() &&
+                 t.subROIs.some(s => s.type === 'cancer' && s.polygons.some(p => p.length >= 3)))
+    .map(t => ({
+      name             : t.name.trim(),
+      boundary_polygons: (t.boundaries || []).filter(p => p.length >= 3),
+      sub_rois         : t.subROIs
+        .filter(s => s.type === 'cancer')
+        .map(s => ({
+          name    : s.name,
+          type    : s.type,
+          polygons: s.polygons.filter(p => p.length >= 3),
+        }))
+        .filter(s => s.polygons.length > 0),
+    }));
+
+  if (payload.length === 0) { showToast('没有有效 ROI', 'warn'); return; }
+
+  const body = {
+    tissue_regions     : payload,
+    pseudobulk_method  : document.getElementById('pbMethod').value,
+    include_annotation : document.getElementById('useAnnotation').value === 'true',
+    use_tps            : document.getElementById('useTps').value === 'true',
+  };
+
+  document.getElementById('extractProgress').style.display = '';
+  document.getElementById('extractResult').style.display   = 'none';
+  document.getElementById('btnExtract').disabled           = true;
+
+  try {
+    const resp = await fetch('/roi/api/extract', {
+      method : 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body   : JSON.stringify(body),
+    });
+    const data = await resp.json();
+    document.getElementById('extractProgress').style.display = 'none';
+    document.getElementById('btnExtract').disabled = false;
+
+    if (data.status !== 'success') {
+      showToast('提取失败：' + data.message, 'error', 8000);
+      console.error(data.traceback || '');
+      return;
+    }
+
+    showExtractResult(data);
+    showToast(data.message, 'success');
+
+  } catch (err) {
+    document.getElementById('extractProgress').style.display = 'none';
+    document.getElementById('btnExtract').disabled = false;
+    showToast('请求失败：' + err.message, 'error');
+  }
+});
+
+function showExtractResult(data) {
+  document.getElementById('extractResult').style.display = '';
+
+  // 反馈：本次提取实际是否走了 TPS（用户的勾选可能因为缺少控制点而被静默退化）
+  const applied = data.tps_applied === true;
+  showToast(
+    applied
+      ? '已应用 TPS 精修（基于 affine + thin-plate-spline 控制点）'
+      : '仅使用刚性配准结果（affine）',
+    applied ? 'success' : 'info',
+    4000,
+  );
+
+  // 各区域卡片（key = roi_key，包含 tissue+sub 信息）
+  const grid = document.getElementById('resultGrid');
+  grid.innerHTML = data.roi_stats.map(s => {
+    const fn = data.out_files[s.key]?.intensity_csv;
+    const title = s.tissue_name
+      ? `${escapeHtml(s.tissue_name)} / ${escapeHtml(s.sub_roi_name)}`
+      : escapeHtml(s.sub_roi_name);
+    return `
+      <div class="result-card">
+        <div class="rc-name">${title}</div>
+        <div style="font-size:0.72rem; color:var(--text-muted); margin-bottom:0.3rem;">${s.type}</div>
+        <div class="rc-count">${s.pixel_count.toLocaleString()}</div>
+        <div class="rc-sub">像素 · ${s.n_mz} 个 m/z</div>
+        ${fn ? `<a class="btn btn-ghost btn-small rc-btn"
+                   href="/roi/api/download/${encodeURIComponent(fn)}"
+                   download="${fn}" style="margin-top:0.5rem; display:block; text-align:center;">
+                  ↓ 强度 CSV
+                </a>` : ''}
+      </div>`;
+  }).join('');
+
+  // 预览图
+  if (data.preview_img) {
+    document.getElementById('previewImg').src = 'data:image/png;base64,' + data.preview_img;
+  }
+
+  // Pseudo-bulk 下载按钮
+  const pbLink = document.getElementById('btnDlPseudobulk');
+  pbLink.href = `/roi/api/download/${encodeURIComponent(data.pseudobulk_csv)}`;
+  pbLink.download = data.pseudobulk_csv;
+}
+
+// ────────────────────────────────────────────────────────
+// 恢复当前样本已保存的 ROI 多边形和导出结果
+// ────────────────────────────────────────────────────────
+async function loadSavedState() {
+  try {
+    const resp = await fetch('/roi/api/saved_state');
+    const data = await resp.json();
+    if (data.status !== 'ok' || !data.has_saved) return;
+
+    const meta = data.polygons_meta || {};
+    const savedRegions = meta.tissue_regions || [];
+    if (savedRegions.length > 0) {
+      tissueRegions = savedRegions.map(t => ({
+        id: _newId('tissue'),
+        name: t.name || '',
+        boundaries: (t.boundary_polygons || []).filter(p => p.length >= 3),
+        subROIs: (t.sub_rois || [])
+          .filter(s => s.type === 'cancer')
+          .map(s => ({
+            id: _newId('sub'),
+            name: s.name || autoSubName('cancer', { subROIs: [] }),
+            type: 'cancer',
+            polygons: (s.polygons || []).filter(p => p.length >= 3),
+          })),
+      }));
+      currentTissueId = tissueRegions[0]?.id || null;
+      singleTissueMode = tissueRegions.length <= 1;
+      document.getElementById('chkSingleTissue').checked = singleTissueMode;
+      document.getElementById('tissueModeHint').textContent = singleTissueMode
+        ? '单组织模式：所有多边形归到一个组织名下'
+        : '多组织模式：可分别为不同组织区域命名；每个组织内剩余像素自动作为癌旁';
+      refreshAll();
+      showToast('已恢复上次保存的 ROI 标注', 'info', 2500);
+    }
+
+    if (data.pseudobulk_csv && (data.roi_stats || []).length > 0) {
+      const files = data.result_files || [];
+      const outFiles = {};
+      (data.roi_stats || []).forEach(s => {
+        const stem = `${s.tissue_name || ''}__${s.sub_roi_name || ''}`;
+        const match = files.find(f => f.endsWith('_intensity.csv') && (
+          f.includes(s.sub_roi_name || '') || f.includes(stem)
+        ));
+        outFiles[s.tissue_name + '__' + s.sub_roi_name] = { intensity_csv: match };
+      });
+      showExtractResult({
+        tps_applied: false,
+        roi_stats: (data.roi_stats || []).map(s => ({
+          ...s,
+          key: s.tissue_name + '__' + s.sub_roi_name,
+        })),
+        out_files: outFiles,
+        pseudobulk_csv: data.pseudobulk_csv,
+        preview_img: null,
+      });
+    }
+  } catch (e) {
+    console.warn('saved_state 读取失败:', e);
+  }
+}
+
+// ────────────────────────────────────────────────────────
+// 初始化
+// ────────────────────────────────────────────────────────
+setStep(1);
+ensureSingleTissueExists();    // 单组织模式默认有一个空组织
+refreshAll();                  // 渲染顶部组织管理 + 右侧子区域面板
+switchTargetUI();              // 设置初始 active 按钮
+checkSessionInfo().then(loadSavedState);
+
+// 窗口resize时重新调整 canvas
+window.addEventListener('resize', () => {
+  if (imageLoaded) initCanvas();
+});
+
+// 进入 step2 时重新渲染（保证组织管理 UI 在 DOM 已挂载后渲染）
+const _origGoStep2 = document.getElementById('btnGoStep2').onclick;
+document.getElementById('btnGoStep2').addEventListener('click', () => {
+  setTimeout(() => { refreshAll(); switchTargetUI(); }, 50);
+});
+</script>
+{% endblock %}

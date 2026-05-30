@@ -1,0 +1,235 @@
+{% extends "base.html" %}
+{% block title %}样本管理{% endblock %}
+
+{% block head %}
+<style>
+.batch-header { display:flex; align-items:center; gap:1rem; flex-wrap:wrap; }
+.batch-select { background:var(--bg-input); border:1px solid var(--border); color:var(--text); padding:0.4rem 0.6rem; border-radius:6px; min-width:240px; font-family:inherit; }
+.sample-table { width:100%; border-collapse:collapse; font-size:0.86rem; }
+.sample-table th { text-align:left; padding:0.6rem 0.7rem; color:var(--text-muted); border-bottom:1px solid var(--border); font-weight:500; }
+.sample-table td { padding:0.55rem 0.7rem; border-bottom:1px solid var(--border); }
+.sample-table tr.current { background: var(--accent-dim); }
+.sample-table tr.current td:first-child::before { content: '✓ '; color: var(--accent); font-weight:700; }
+.stage-pill { display:inline-block; padding:0.1rem 0.45rem; margin-right:0.25rem; border-radius:4px; font-size:0.7rem; font-family:var(--mono); }
+.stage-pill.done { background: rgba(52,211,153,0.18); color: var(--success); }
+.stage-pill.todo { background: var(--bg-hover); color: var(--text-muted); }
+.group-input { background:var(--bg-input); border:1px solid var(--border); color:var(--text); padding:0.25rem 0.4rem; border-radius:4px; width:90px; font-family:inherit; font-size:0.82rem; }
+.name-input { background:transparent; border:1px solid transparent; color:var(--text); padding:0.25rem 0.4rem; border-radius:4px; width:140px; font-family:inherit; font-size:0.86rem; }
+.name-input:hover, .name-input:focus { border-color: var(--border); background: var(--bg-input); outline:none; }
+.row-actions { display:flex; gap:0.3rem; }
+.warn-banner { background: rgba(245,158,11,0.15); border:1px solid rgba(245,158,11,0.4); color: var(--warn); padding:0.5rem 0.8rem; border-radius:6px; font-size:0.84rem; margin-top:0.6rem; display:none; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h2>样本批次管理</h2>
+  <p class="page-desc">管理本次分析的样本集合。每个样本独立走数据导入→配准→ROI 提取流水线，第 8-10 模块汇总整个批次的结果。</p>
+</div>
+
+<!-- 批次选择卡 -->
+<div class="card">
+  <div class="card-title">当前批次</div>
+  <div class="batch-header">
+    <select class="batch-select" id="batchSelect"></select>
+    <button class="btn btn-secondary" id="btnNewBatch" type="button">+ 新建批次</button>
+    <button class="btn btn-ghost" id="btnDeleteBatch" type="button">删除当前批次</button>
+    <span class="hint" id="batchInfo" style="margin-left:auto; color:var(--text-muted); font-size:0.82rem;"></span>
+  </div>
+  <div class="warn-banner" id="sampleLimitWarn">
+    样本数已达建议上限 (<span id="sampleLimitNum"></span>)，更多样本可能导致内存压力 / UI 卡顿。
+  </div>
+</div>
+
+<!-- 样本列表卡 -->
+<div class="card" style="margin-top:0.8rem;">
+  <div class="card-title" style="display:flex; align-items:center; justify-content:space-between;">
+    <span>样本列表（<span id="sampleCount">0</span>）</span>
+    <button class="btn btn-primary btn-small" id="btnAddSample" type="button">+ 添加样本</button>
+  </div>
+  <table class="sample-table" id="sampleTable">
+    <thead>
+      <tr>
+        <th style="width:1%; white-space:nowrap;">#</th>
+        <th>样本名</th>
+        <th style="width:130px;">分组</th>
+        <th>完成阶段</th>
+        <th style="width:170px;">操作</th>
+      </tr>
+    </thead>
+    <tbody id="sampleBody">
+      <tr><td colspan="5" style="color:var(--text-muted); text-align:center; padding:1.2rem;">加载中...</td></tr>
+    </tbody>
+  </table>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const STAGE_LABELS = {
+  import     : '导入',
+  norm       : '归一化',
+  rigid      : '刚配',
+  tps        : 'TPS',
+  annotation : '注释',
+  roi        : 'ROI',
+};
+let STATE = null;
+
+async function loadState() {
+  const r = await fetch('/batch/api/state');
+  const d = await r.json();
+  STATE = d;
+  render();
+}
+
+function render() {
+  if (!STATE) return;
+  // 批次下拉
+  const sel = document.getElementById('batchSelect');
+  sel.innerHTML = STATE.all_batches.map(b =>
+    `<option value="${b.batch_id}" ${b.batch_id === STATE.current_batch_id ? 'selected' : ''}>
+       ${escapeHtml(b.name)} · ${b.sample_count} 样本
+     </option>`
+  ).join('');
+
+  document.getElementById('batchInfo').textContent =
+    `批次 ID: ${STATE.current_batch_id}`;
+
+  // 样本数量提示
+  document.getElementById('sampleCount').textContent = STATE.samples.length;
+  const limitEl = document.getElementById('sampleLimitWarn');
+  if (STATE.samples.length >= STATE.sample_soft_limit) {
+    document.getElementById('sampleLimitNum').textContent = STATE.sample_soft_limit;
+    limitEl.style.display = 'block';
+  } else {
+    limitEl.style.display = 'none';
+  }
+
+  // 样本表
+  const body = document.getElementById('sampleBody');
+  if (STATE.samples.length === 0) {
+    body.innerHTML = `<tr><td colspan="5" style="color:var(--text-muted); text-align:center; padding:1.2rem;">
+      尚未添加样本，点击右上角「+ 添加样本」开始。</td></tr>`;
+    return;
+  }
+  body.innerHTML = STATE.samples.map((s, idx) => {
+    const isCurrent = s.id === STATE.current_sample_id;
+    const stages = STATE.stages.map(stg => {
+      const done = (s.stages_done || []).includes(stg);
+      return `<span class="stage-pill ${done ? 'done' : 'todo'}">${STAGE_LABELS[stg] || stg}</span>`;
+    }).join('');
+    return `
+      <tr class="${isCurrent ? 'current' : ''}" data-sid="${s.id}">
+        <td style="font-family:var(--mono); color:var(--text-muted);">${idx + 1}</td>
+        <td><input class="name-input" data-action="rename" value="${escapeHtml(s.name)}"></td>
+        <td><input class="group-input" data-action="set-group" value="${escapeHtml(s.group || '')}"
+                   placeholder="cancer / control"></td>
+        <td>${stages}</td>
+        <td class="row-actions">
+          ${isCurrent
+              ? '<span class="btn btn-ghost btn-small" style="cursor:default;">编辑中</span>'
+              : '<button class="btn btn-secondary btn-small" data-action="switch">切换为编辑</button>'}
+          <button class="btn btn-ghost btn-small" data-action="delete">删除</button>
+        </td>
+      </tr>`;
+  }).join('');
+}
+
+function escapeHtml(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+// 批次切换/新建/删除
+document.getElementById('batchSelect').addEventListener('change', async (e) => {
+  await fetch('/batch/api/switch_batch', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({batch_id: e.target.value}),
+  });
+  await loadState();
+});
+document.getElementById('btnNewBatch').addEventListener('click', async () => {
+  const name = prompt('为新批次命名（留空使用日期）');
+  if (name === null) return;
+  const r = await fetch('/batch/api/new_batch', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({name}),
+  });
+  const d = await r.json();
+  if (d.status === 'ok') { showToast('新批次已创建', 'success'); await loadState(); }
+});
+document.getElementById('btnDeleteBatch').addEventListener('click', async () => {
+  if (!STATE) return;
+  if (!confirm(`确定删除批次「${STATE.current_batch_name}」及其所有样本数据吗？此操作不可撤销。`)) return;
+  const r = await fetch('/batch/api/delete_batch', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({batch_id: STATE.current_batch_id}),
+  });
+  const d = await r.json();
+  if (d.status === 'ok') { showToast('批次已删除', 'success'); await loadState(); }
+  else { showToast('删除失败：' + d.message, 'error'); }
+});
+
+// 添加样本
+document.getElementById('btnAddSample').addEventListener('click', async () => {
+  const r = await fetch('/batch/api/add_sample', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({}),
+  });
+  const d = await r.json();
+  if (d.status === 'ok') { showToast('已添加样本', 'success'); await loadState(); }
+  else { showToast('添加失败：' + (d.message || ''), 'error'); }
+});
+
+// 表格事件代理
+document.getElementById('sampleBody').addEventListener('click', async (e) => {
+  const btn = e.target.closest('[data-action]');
+  if (!btn || btn.tagName === 'INPUT') return;
+  const tr = btn.closest('tr');
+  if (!tr) return;
+  const sid = tr.dataset.sid;
+  const action = btn.dataset.action;
+
+  if (action === 'switch') {
+    const r = await fetch('/batch/api/switch_sample', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({sample_id: sid}),
+    });
+    const d = await r.json();
+    if (d.status === 'ok') { showToast('已切换当前样本', 'success'); await loadState(); }
+  } else if (action === 'delete') {
+    if (!confirm('确定删除该样本及其所有数据？')) return;
+    const r = await fetch('/batch/api/delete_sample', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({sample_id: sid}),
+    });
+    const d = await r.json();
+    if (d.status === 'ok') { showToast('已删除', 'success'); await loadState(); }
+    else { showToast('删除失败：' + d.message, 'error'); }
+  }
+});
+
+// rename / set-group：失焦或回车提交
+document.getElementById('sampleBody').addEventListener('change', async (e) => {
+  const inp = e.target;
+  const action = inp.dataset.action;
+  if (action !== 'rename' && action !== 'set-group') return;
+  const tr = inp.closest('tr');
+  if (!tr) return;
+  const sid = tr.dataset.sid;
+  const payload = {sample_id: sid};
+  if (action === 'rename')   payload.name  = inp.value;
+  if (action === 'set-group') payload.group = inp.value;
+  const r = await fetch('/batch/api/update_sample', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(payload),
+  });
+  const d = await r.json();
+  if (d.status !== 'ok') { showToast('更新失败：' + d.message, 'error'); }
+});
+
+loadState();
+</script>
+{% endblock %}

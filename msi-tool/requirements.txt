@@ -1,0 +1,17 @@
+flask>=3.0
+numpy
+opencv-python
+scipy
+pandas
+anndata
+Pillow
+scikit-learn
+umap-learn
+matplotlib
+openpyxl
+torch
+torchvision
+scikit-image
+# 可选：Leiden 聚类（安装后自动启用）
+# leidenalg
+# igraph
