@@ -1,0 +1,20 @@
+# 版本控制与历史
+.git
+.history
+
+# Python 缓存
+**/__pycache__
+*.py[cod]
+
+# 运行时数据（容器内会重建到 /tmp/msi-data）
+msi-tool/temp
+msi-tool/.secret_key
+
+# 文档插图，部署不需要
+*.pdf
+*.png
+画图.py
+
+# 编辑器
+.vscode
+.idea
