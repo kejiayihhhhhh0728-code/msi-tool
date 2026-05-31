@@ -31,7 +31,7 @@ from config import BATCH_FOLDER, UPLOAD_CACHE
 
 
 # ─── 阶段：每个样本可达到的工作流阶段名 ──────────────────────────────────
-STAGES = ('import', 'norm', 'rigid', 'tps', 'super_resolution', 'annotation', 'roi')
+STAGES = ('import', 'norm', 'rigid', 'tps', 'annotation', 'roi')
 
 
 # ─── ID 生成 ───────────────────────────────────────────────────────────

@@ -64,7 +64,6 @@ from blueprints.clustering import bp as clustering_bp
 from blueprints.nmf_patterns import bp as nmf_bp
 from blueprints.rigid_reg import bp as rigid_reg_bp
 from blueprints.tps_reg import bp as tps_reg_bp
-from blueprints.super_resolution import bp as super_resolution_bp
 from blueprints.roi_extract import bp as roi_bp
 from blueprints.diff_metabolites import bp as diff_bp
 from blueprints.rf_classifier import bp as rf_bp
@@ -82,7 +81,6 @@ app.register_blueprint(clustering_bp)
 app.register_blueprint(nmf_bp)
 app.register_blueprint(rigid_reg_bp)
 app.register_blueprint(tps_reg_bp)
-app.register_blueprint(super_resolution_bp)
 app.register_blueprint(roi_bp)
 app.register_blueprint(diff_bp)
 app.register_blueprint(rf_bp)
