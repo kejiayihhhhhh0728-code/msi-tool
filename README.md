@@ -20,10 +20,6 @@ MSI–HE 配准、ROI 提取、差异代谢物筛选、随机森林分类器、
 - 本地运行：`cd msi-tool && pip install -r requirements.txt && python app.py` → <http://localhost:5000>
 - 在线部署：本仓库根目录的 `Dockerfile` 用于 Hugging Face Spaces（Docker SDK，端口 7860）
 
-## 在线演示说明
-
-- 免费 Space 无持久存储，容器重启后上传的数据与会话会清空，仅供功能演示。
-
 ## 核心功能
 
 - MSI 原始数据导入、TIC/RMS 归一化与质量预览
