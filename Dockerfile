@@ -9,12 +9,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-# 先单独安装 CPU 版 torch / torchvision，避免默认拉取数 GB 的 CUDA 版本
-RUN pip install --no-cache-dir \
-        torch torchvision \
-        --index-url https://download.pytorch.org/whl/cpu
-
-# 再安装其余依赖（torch 已满足，会被跳过）+ 生产级 WSGI 服务器
+# 安装 Python 依赖 + 生产级 WSGI 服务器
 COPY msi-tool/requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt gunicorn
 
